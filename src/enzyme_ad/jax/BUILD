@@ -878,6 +878,17 @@ cc_library(
     alwayslink = True,
 )
 
+cc_library(
+    name = "CInterfaceOptPasses",
+    srcs = ["Integrations/c/EnzymeXLAOptPasses.cpp"],
+    hdrs = ["Integrations/c/EnzymeXLAOptPasses.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/strings",
+    ],
+    alwayslink = True,
+)
+
 td_library(
     name = "TritonExtDialectTdFiles",
     srcs = [
@@ -1647,6 +1658,7 @@ pybind_extension(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":CInterfaceOptPasses",
         ":RegistryUtils",
         ":TransformOps",
         ":XLADerivatives",
