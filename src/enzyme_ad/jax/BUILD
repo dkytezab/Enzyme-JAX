@@ -1080,6 +1080,7 @@ cc_library(
         ":BlasDialectIncGen",
         ":BlasOpsIncGen",
         ":BlasDialectUtils",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:SideEffectInterfaces",
