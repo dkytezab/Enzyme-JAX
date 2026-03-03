@@ -1081,6 +1081,9 @@ cc_library(
         ":BlasOpsIncGen",
         ":BlasDialectUtils",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:QuantOps",
         "@stablehlo//:base",
     ],
 )
