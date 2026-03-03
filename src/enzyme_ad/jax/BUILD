@@ -1078,13 +1078,13 @@ cc_library(
     deps = [
         ":BlasAttrsIncGen",
         ":BlasDialectIncGen",
-        ":BlasOpsIncGen",
         ":BlasDialectUtils",
+        ":BlasOpsIncGen",
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:BytecodeOpInterface",
-        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:QuantOps",
+        "@llvm-project//mlir:SideEffectInterfaces",
         "@stablehlo//:base",
     ],
 )
@@ -1309,6 +1309,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":BlasDialectUtils",
         ":CheckedRewrite",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
@@ -1331,7 +1332,6 @@ cc_library(
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
-        ":BlasDialectUtils",
         ":TritonExtDialect",
         ":chlo-derivatives",
         ":enzymexla-derivatives",
