@@ -1061,7 +1061,7 @@ cc_library(
     hdrs = ["Dialect/BLAS/Utils.h"],
     deps = [
         "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:IR",
     ],
 )
 
