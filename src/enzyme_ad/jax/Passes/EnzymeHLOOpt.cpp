@@ -30462,20 +30462,19 @@ struct DotGeneralToSyrk
     auto alphaType = RankedTensorType::get({}, elemType);
 
     auto syrkOp = blas::SyrkOp::create(
-        rewriter, op.getLoc(), op.getResult().getType(), syrkInput,
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
+        rewriter, op.getLoc(), op.getResult().getType(),
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 1))),
+        syrkInput,
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 0))),
-        blas::BlasUploAttr::get(op.getContext(),
-                                       blas::BlasUplo::any),
-        blas::BlasUploAttr::get(op.getContext(),
-                                       blas::BlasUplo::any),
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
+        blas::BlasUploAttr::get(op.getContext(), blas::BlasUplo::any),
+        blas::BlasUploAttr::get(op.getContext(), blas::BlasUplo::any),
         blas::BlasTransposeAttr::get(op.getContext(), lapackTranspose));
     rewriter.replaceOp(op, syrkOp.getResult());
     return success();
@@ -30544,20 +30543,19 @@ struct DotGeneralToSymm
 
     auto symmOp = blas::SymmOp::create(
         rewriter, op.getLoc(), op.getResult().getType(),
-        symmMatrix, // A (symmetric)
-        genMatrix,  // B (general)
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
+        symmMatrix,                                      // A (symmetric)
+        genMatrix,                                       // B (general)
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
         blas::BlasSideAttr::get(op.getContext(), side),
-        blas::BlasUploAttr::get(op.getContext(),
-                                       blas::BlasUplo::any));
+        blas::BlasUploAttr::get(op.getContext(), blas::BlasUplo::any));
     rewriter.replaceOp(op, symmOp.getResult());
     return success();
   }
@@ -30601,8 +30599,7 @@ struct FuseMulBase
   }
 };
 
-struct FuseMulIntoSymm
-    : public FuseMulBase<blas::SymmOp, FuseMulIntoSymm> {
+struct FuseMulIntoSymm : public FuseMulBase<blas::SymmOp, FuseMulIntoSymm> {
   using FuseMulBase<blas::SymmOp, FuseMulIntoSymm>::FuseMulBase;
 
   LogicalResult fuseMul(PatternRewriter &rewriter, blas::SymmOp symmOp,
@@ -30613,14 +30610,13 @@ struct FuseMulIntoSymm
                                              symmOp.getAlpha(), scalarVal);
 
     rewriter.replaceOpWithNewOp<blas::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(),
-        newAlpha, newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+        op, symmOp.getType(), newAlpha, symmOp.getA(), symmOp.getB(), newBeta,
+        symmOp.getC(), symmOp.getSideAttr(), symmOp.getUploAttr());
     return success();
   }
 };
 
-struct FuseMulIntoSyrk
-    : public FuseMulBase<blas::SyrkOp, FuseMulIntoSyrk> {
+struct FuseMulIntoSyrk : public FuseMulBase<blas::SyrkOp, FuseMulIntoSyrk> {
   using FuseMulBase<blas::SyrkOp, FuseMulIntoSyrk>::FuseMulBase;
 
   LogicalResult fuseMul(PatternRewriter &rewriter, blas::SyrkOp syrkOp,
@@ -30631,7 +30627,7 @@ struct FuseMulIntoSyrk
                                              syrkOp.getAlpha(), scalarVal);
 
     rewriter.replaceOpWithNewOp<blas::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
+        op, syrkOp.getType(), newAlpha, syrkOp.getA(), newBeta, syrkOp.getC(),
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
         syrkOp.getTransposeAttr());
     return success();
@@ -30684,8 +30680,7 @@ struct FuseAddBase
   }
 };
 
-struct FuseAddIntoSymm
-    : public FuseAddBase<blas::SymmOp, FuseAddIntoSymm> {
+struct FuseAddIntoSymm : public FuseAddBase<blas::SymmOp, FuseAddIntoSymm> {
   using FuseAddBase<blas::SymmOp, FuseAddIntoSymm>::FuseAddBase;
 
   LogicalResult fuseAdd(PatternRewriter &rewriter, blas::SymmOp symmOp,
@@ -30694,14 +30689,13 @@ struct FuseAddIntoSymm
         rewriter, symmOp.getBeta(), symmOp.getType(), op, symmOp.getC(), other);
 
     rewriter.replaceOpWithNewOp<blas::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC,
-        symmOp.getAlpha(), newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+        op, symmOp.getType(), symmOp.getAlpha(), symmOp.getA(), symmOp.getB(),
+        newBeta, newC, symmOp.getSideAttr(), symmOp.getUploAttr());
     return success();
   }
 };
 
-struct FuseAddIntoSyrk
-    : public FuseAddBase<blas::SyrkOp, FuseAddIntoSyrk> {
+struct FuseAddIntoSyrk : public FuseAddBase<blas::SyrkOp, FuseAddIntoSyrk> {
   using FuseAddBase<blas::SyrkOp, FuseAddIntoSyrk>::FuseAddBase;
 
   LogicalResult fuseAdd(PatternRewriter &rewriter, blas::SyrkOp syrkOp,
@@ -30716,7 +30710,7 @@ struct FuseAddIntoSyrk
         rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
 
     rewriter.replaceOpWithNewOp<blas::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
+        op, syrkOp.getType(), syrkOp.getAlpha(), syrkOp.getA(), newBeta, newC,
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
         syrkOp.getTransposeAttr());
     return success();
@@ -30746,8 +30740,8 @@ struct TransposeSyrkToSyrk
     }
 
     rewriter.replaceOpWithNewOp<blas::SyrkOp>(
-        op, op.getResult().getType(), transposeOp.getOperand(), op.getC(),
-        op.getAlpha(), op.getBeta(), op.getUploAttr(), op.getOutputUploAttr(),
+        op, op.getResult().getType(), op.getAlpha(), transposeOp.getOperand(),
+        op.getBeta(), op.getC(), op.getUploAttr(), op.getOutputUploAttr(),
         blas::BlasTransposeAttr::get(
             op.getContext(),
             enzyme::transposeBlasTranspose(op.getTranspose(), false)));
@@ -30756,8 +30750,7 @@ struct TransposeSyrkToSyrk
 };
 
 struct SyrkSimplifyOutputUplo final
-    : public CheckedOpRewritePattern<blas::SyrkOp,
-                                     SyrkSimplifyOutputUplo> {
+    : public CheckedOpRewritePattern<blas::SyrkOp, SyrkSimplifyOutputUplo> {
   using CheckedOpRewritePattern<
       blas::SyrkOp, SyrkSimplifyOutputUplo>::CheckedOpRewritePattern;
 
