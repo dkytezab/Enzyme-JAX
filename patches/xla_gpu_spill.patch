@@ -236,7 +236,7 @@ index 38b83ba9dd..23b1fdd8ca 100644
          "@com_google_absl//absl/log:check",
          "@com_google_absl//absl/time",
 diff --git a/xla/service/gpu/model/gpu_performance_model.cc b/xla/service/gpu/model/gpu_performance_model.cc
-index 956bc9f926..cb71c8db8d 100644
+index 956bc9f926..21fbe3a3ee 100644
 --- a/xla/service/gpu/model/gpu_performance_model.cc
 +++ b/xla/service/gpu/model/gpu_performance_model.cc
 @@ -17,17 +17,24 @@ limitations under the License.
@@ -426,84 +426,8 @@ index 956bc9f926..cb71c8db8d 100644
  
    gpu_performance_model_cache_.Set(*producer, *consumer, fusion_runtime);
    return fusion_runtime;
-@@ -319,5 +433,75 @@ void GpuPerformanceModel::RecordEstimatedRunTime(
-   VLOG(8) << "RecordEstimatedRunTime: " << instruction->ToString();
- }
- 
-+
-+std::optional<EstimateRunTimeData> GpuPerformanceModelCache::Get(
-+    const HloInstruction& instruction) {
-+  absl::MutexLock lock(&mutex_);
-+  auto it = instruction_runtime_data_.find(&instruction);
-+  if (it != instruction_runtime_data_.end()) {
-+    return it->second;
-+  }
-+  return std::nullopt;
-+}
-+
-+std::optional<absl::Duration> GpuPerformanceModelCache::Get(
-+    const HloInstruction& producer, const HloInstruction& consumer) {
-+  absl::MutexLock lock(&mutex_);
-+
-+  auto it = fusion_runtime_data_.find(&producer);
-+  if (it != fusion_runtime_data_.end()) {
-+    auto jt = it->second.find(&consumer);
-+    if (jt != it->second.end()) {
-+      return jt->second;
-+    }
-+  }
-+  return std::nullopt;
-+}
-+
-+const absl::flat_hash_map<const HloInstruction*, absl::Duration>&
-+GpuPerformanceModelCache::GetAllConsumers(const HloInstruction& producer) {
-+  return fusion_runtime_data_[&producer];
-+}
-+
-+bool GpuPerformanceModelCache::ContainsConsumers(
-+    const HloInstruction& producer) {
-+  return fusion_runtime_data_.contains(&producer);
-+}
-+
-+void GpuPerformanceModelCache::Set(const HloInstruction& instruction,
-+                                   const EstimateRunTimeData& runtime_data) {
-+  absl::MutexLock lock(&mutex_);
-+  instruction_runtime_data_[&instruction] = runtime_data;
-+}
-+
-+void GpuPerformanceModelCache::Set(const HloInstruction& producer,
-+                                   const HloInstruction& consumer,
-+                                   absl::Duration runtime) {
-+  absl::MutexLock lock(&mutex_);
-+  fusion_runtime_data_[&producer][&consumer] = runtime;
-+}
-+
-+void GpuPerformanceModelCache::Invalidate(const HloInstruction& instruction) {
-+  absl::MutexLock lock(&mutex_);
-+  // Remove runtime data for the instruction.
-+  instruction_runtime_data_.erase(&instruction);
-+
-+  // Remove cache for all producer-consumer pairs where the instruction is
-+  // producer.
-+  fusion_runtime_data_.erase(&instruction);
-+
-+  // Iterate through operands to find all producer-consumer pairs where
-+  // instruction is consumer and remove them from cache.
-+  for (auto* operand : instruction.operands()) {
-+    if (operand->opcode() == HloOpcode::kGetTupleElement) {
-+      operand = operand->mutable_operand(0);
-+    }
-+    auto it = fusion_runtime_data_.find(operand);
-+    if (it != fusion_runtime_data_.end()) {
-+      it->second.erase(&instruction);
-+    }
-+  }
-+}
-+
- }  // namespace gpu
- }  // namespace xla
 diff --git a/xla/service/gpu/model/gpu_performance_model.h b/xla/service/gpu/model/gpu_performance_model.h
-index c150db6dde..592aa5f02f 100644
+index c150db6dde..815181da4e 100644
 --- a/xla/service/gpu/model/gpu_performance_model.h
 +++ b/xla/service/gpu/model/gpu_performance_model.h
 @@ -65,7 +65,7 @@ class GpuPerformanceModel : public GpuPerformanceModelBase {
@@ -515,53 +439,8 @@ index c150db6dde..592aa5f02f 100644
        const HloInstruction* producer, const HloInstruction* consumer,
        const EstimateRunTimeData& producer_runtime,
        const EstimateRunTimeData& consumer_runtime,
-@@ -105,6 +105,44 @@ class GpuPerformanceModelOwning {
-   std::unique_ptr<GpuPerformanceModel> gpu_performance_model_;
- };
- 
-+
-+class GpuPerformanceModelCache {
-+ public:
-+  // Returns cached runtime data for the instruction or producer-consumer pair.
-+  // Returns nullopt if there is no data in cache.
-+  std::optional<EstimateRunTimeData> Get(const HloInstruction& instruction);
-+  std::optional<absl::Duration> Get(const HloInstruction& producer,
-+                                    const HloInstruction& consumer);
-+  const absl::flat_hash_map<const HloInstruction*, absl::Duration>&
-+  // Returns cache entries for all consumers of this producer.
-+  GetAllConsumers(const HloInstruction& producer);
-+  // Checks if producer-consumer pair cache entries exist for this producer.
-+  bool ContainsConsumers(const HloInstruction& producer);
-+  // Sets cache value for the instruction or producer-consumer pair.
-+  void Set(const HloInstruction& instruction,
-+           const EstimateRunTimeData& runtime_data);
-+  void Set(const HloInstruction& producer, const HloInstruction& consumer,
-+           absl::Duration runtime);
-+
-+  // Removes all cache entries for this instruction. The cache contains entries
-+  // for individual instructions in instruction_runtime_data_ and for
-+  // producer-consumer pairs in fusion_runtime_data_.
-+  void Invalidate(const HloInstruction& instruction);
-+
-+ private:
-+  absl::Mutex mutex_;
-+
-+  // Stores unfused runtime data for individual instructions.
-+  absl::flat_hash_map<const HloInstruction*, EstimateRunTimeData>
-+      instruction_runtime_data_;
-+
-+  // Stores fused runtime data for producer-consumer pairs.
-+  absl::flat_hash_map<
-+      const HloInstruction*,
-+      absl::flat_hash_map<const HloInstruction*, absl::Duration>>
-+      fusion_runtime_data_;
-+};
-+
- }  // namespace gpu
- }  // namespace xla
- 
 diff --git a/xla/service/gpu/model/gpu_performance_model_base.cc b/xla/service/gpu/model/gpu_performance_model_base.cc
-index 3c2e2eafbd..9429e2082d 100644
+index 3c2e2eafbd..6ba20623fd 100644
 --- a/xla/service/gpu/model/gpu_performance_model_base.cc
 +++ b/xla/service/gpu/model/gpu_performance_model_base.cc
 @@ -18,6 +18,7 @@ limitations under the License.
@@ -621,13 +500,14 @@ index 3c2e2eafbd..9429e2082d 100644
  
  namespace xla {
  namespace gpu {
-@@ -141,6 +169,18 @@ void GpuPerformanceModelCache::Invalidate(const HloInstruction& instruction) {
+@@ -141,6 +169,19 @@ void GpuPerformanceModelCache::Invalidate(const HloInstruction& instruction) {
    }
  }
  
 +/*static*/ std::unique_ptr<mlir::MLIRContext>
 +GpuPerformanceModelBase::CreateMlirContext() {
-+  auto mlir_context = std::make_unique<mlir::MLIRContext>();
++  // We are already in a multi-threaded context, so we can disable MLIR threading.
++  auto mlir_context = std::make_unique<mlir::MLIRContext>(mlir::MLIRContext::Threading::DISABLED);
 +  mlir::DialectRegistry registry = EmitterBase::GetDialectRegistry();
 +  mlir_context->appendDialectRegistry(registry);
 +  for (mlir::StringRef name : registry.getDialectNames()) {
@@ -640,7 +520,7 @@ index 3c2e2eafbd..9429e2082d 100644
  /*static*/
  LaunchDimensions GpuPerformanceModelBase::EstimateFusionLaunchDimensions(
      const HloFusionAnalysis& fusion_analysis, mlir::MLIRContext* mlir_context) {
-@@ -392,6 +432,420 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
+@@ -392,6 +433,420 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
           std::min(compute_time, memory_access_time) * kMemoryComputeParallelism;
  }
  
