@@ -661,33 +661,6 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
   return ifCondInner->getResults();
 }
 
-bool isZero(ElementsAttr v) {
-  if (!v.isSplat())
-    return false;
-
-  auto attr = v.getSplatValue<Attribute>();
-  if (auto fp = dyn_cast<FloatAttr>(attr)) {
-    if (fp.getValue().isZero())
-      return true;
-  }
-  if (auto fp = dyn_cast<IntegerAttr>(attr)) {
-    if (fp.getValue().isZero())
-      return true;
-  }
-  return false;
-}
-
-bool isZero(Value v) {
-  DenseElementsAttr elem;
-  if (matchPattern(v, m_Constant(&elem))) {
-    return isZero(elem);
-  }
-  if (auto sdyConstant = v.getDefiningOp<sdy::ConstantOp>()) {
-    return isZero(sdyConstant.getValue());
-  }
-  return false;
-}
-
 Value padWithUndefinedValueInDim(PatternRewriter &rewriter, Location loc,
                                  Value val,
                                  mlir::sdy::TensorShardingAttr sharding,
@@ -2402,7 +2375,7 @@ bool detectCrossShardPattern(Value operand, Operation *op,
   if (startIndices[dim] > shardSize) {
     return false;
   }
-  if (shape[dim] - limitIndices[dim] > shardSize) {
+  if (limitIndices[dim] < (numShards - 1) * shardSize) {
     return false;
   }
   return true;
