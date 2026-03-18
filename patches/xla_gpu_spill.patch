@@ -236,7 +236,7 @@ index 38b83ba9dd..23b1fdd8ca 100644
          "@com_google_absl//absl/log:check",
          "@com_google_absl//absl/time",
 diff --git a/xla/service/gpu/model/gpu_performance_model.cc b/xla/service/gpu/model/gpu_performance_model.cc
-index 956bc9f926..7f8f59c5f4 100644
+index 956bc9f926..93039e92ee 100644
 --- a/xla/service/gpu/model/gpu_performance_model.cc
 +++ b/xla/service/gpu/model/gpu_performance_model.cc
 @@ -17,17 +17,24 @@ limitations under the License.
@@ -443,9 +443,9 @@ index 956bc9f926..7f8f59c5f4 100644
 +        GpuPerformanceModelBase::CalculateSpillPenalty(
 +            device_info_, register_usage, launch_dimensions.num_blocks(),
 +            launch_dimensions.num_threads_per_block());
-+    std::ostringstream strm;
-+    strm << " fusion attempt of " << producer->name() << " (" << producer << ") with " << consumer->name() << " (" << consumer << ") - result, " << register_usage.registers_per_thread << " and " << register_usage.spilled_bytes_accessed << "\n";
-+    std::cerr << strm.str();
++    //std::ostringstream strm;
++    //strm << " fusion attempt of " << producer->name() << " (" << producer << ") with " << consumer->name() << " (" << consumer << ") - result, " << register_usage.registers_per_thread << " and " << register_usage.spilled_bytes_accessed << "\n";
++    //std::cerr << strm.str();
 +    exec_time += spill_penalty;
 +  }
 +
@@ -483,7 +483,7 @@ index c150db6dde..815181da4e 100644
        const EstimateRunTimeData& producer_runtime,
        const EstimateRunTimeData& consumer_runtime,
 diff --git a/xla/service/gpu/model/gpu_performance_model_base.cc b/xla/service/gpu/model/gpu_performance_model_base.cc
-index 3c2e2eafbd..1ce5515ed2 100644
+index 3c2e2eafbd..4c81103cac 100644
 --- a/xla/service/gpu/model/gpu_performance_model_base.cc
 +++ b/xla/service/gpu/model/gpu_performance_model_base.cc
 @@ -18,6 +18,7 @@ limitations under the License.
@@ -573,7 +573,7 @@ index 3c2e2eafbd..1ce5515ed2 100644
  /*static*/
  LaunchDimensions GpuPerformanceModelBase::EstimateFusionLaunchDimensions(
      const HloFusionAnalysis& fusion_analysis, mlir::MLIRContext* mlir_context) {
-@@ -392,6 +436,457 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
+@@ -392,6 +436,460 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
           std::min(compute_time, memory_access_time) * kMemoryComputeParallelism;
  }
  
@@ -771,11 +771,13 @@ index 3c2e2eafbd..1ce5515ed2 100644
 +  size_t simple_estimate = simple_register_estimate(instr, nullptr);
 +
 +  if (simple_estimate < 255) {
++    /*
 +    std::ostringstream strm;
 +    strm << "EstimateRegisterUsage: " << instr->name()
 +              << " operands: " << instr->operand_count()
 +               << ", simple_estimate: " << simple_estimate << "\n";
 +    std::cerr << strm.str();
++    */
 +    RegisterUsage result = {simple_estimate, 0};
 +    return result;
 +  }
@@ -837,7 +839,7 @@ index 3c2e2eafbd..1ce5515ed2 100644
 +
 +  auto result = EstimateRegisterUsageFromModule(llvm_module.get());
 +
-+
++  /*
 +  std::ostringstream strm;
 +  strm << "EstimateRegisterUsage: " << instr->name()
 +            << " operands: " << instr->operand_count()
@@ -845,6 +847,7 @@ index 3c2e2eafbd..1ce5515ed2 100644
 +            << ", result: " << result.value().registers_per_thread << ", "
 +            << result.value().spilled_bytes_accessed << "\n";
 +  std::cerr << strm.str();
++  */
 +  return result;
 +}
 +
