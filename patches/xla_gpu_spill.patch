@@ -440,7 +440,7 @@ index c150db6dde..815181da4e 100644
        const EstimateRunTimeData& producer_runtime,
        const EstimateRunTimeData& consumer_runtime,
 diff --git a/xla/service/gpu/model/gpu_performance_model_base.cc b/xla/service/gpu/model/gpu_performance_model_base.cc
-index 3c2e2eafbd..6ba20623fd 100644
+index 3c2e2eafbd..a80d6f9fe6 100644
 --- a/xla/service/gpu/model/gpu_performance_model_base.cc
 +++ b/xla/service/gpu/model/gpu_performance_model_base.cc
 @@ -18,6 +18,7 @@ limitations under the License.
@@ -520,7 +520,7 @@ index 3c2e2eafbd..6ba20623fd 100644
  /*static*/
  LaunchDimensions GpuPerformanceModelBase::EstimateFusionLaunchDimensions(
      const HloFusionAnalysis& fusion_analysis, mlir::MLIRContext* mlir_context) {
-@@ -392,6 +433,420 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
+@@ -392,6 +433,439 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
           std::min(compute_time, memory_access_time) * kMemoryComputeParallelism;
  }
  
@@ -545,6 +545,13 @@ index 3c2e2eafbd..6ba20623fd 100644
 +    return 1;  // Metadata/pointer
 +  }
 +
++  // Broadcast of a scalar just forwards the input.
++  if (instr->opcode() == HloOpcode::kBroadcast) {
++    if (instr->operand(0)->shape().dimensions().size() == 0) {
++      return GetRegistersPerValue(instr->operand(0));
++    }
++  }
++
 +  // Factor in fragmentation and local temporaries missed by HLO-level sort.
 +  // Using 3x factor as complex fusions tend to have high pressure, from
 +  // vectorization and unrolling.
@@ -552,7 +559,17 @@ index 3c2e2eafbd..6ba20623fd 100644
 +  PrimitiveType type = instr->shape().element_type();
 +  int64_t element_size = ShapeUtil::ByteSizeOfPrimitiveType(type);
 +  // Assume 32-bit registers. f64 = 2, f32 = 1, pred = 1 (usually).
-+  return 3 * std::max<int64_t>(1, element_size / 4);
++  size_t registers = std::max<int64_t>(1, element_size / 4);
++
++  if (instr->shape().dimensions().size() == 0) {
++    // Literal constants consume no registers.
++    if (instr->opcode() == HloOpcode::kConstant) {
++      return 0;
++    }
++    return registers;
++  }
++
++  return 3 * registers;
 +}
 +
 +int64_t AddressingOverhead(const HloInstruction* instr) {
@@ -587,11 +604,13 @@ index 3c2e2eafbd..6ba20623fd 100644
 +bool ProducesRegister(const HloInstruction* instr) {
 +  switch (instr->opcode()) {
 +    case HloOpcode::kBroadcast:
++    case HloOpcode::kReverse:
 +    case HloOpcode::kReshape:
 +    case HloOpcode::kBitcast:
 +    case HloOpcode::kTuple:
 +    case HloOpcode::kGetTupleElement:
 +    case HloOpcode::kPad:
++    case HloOpcode::kConcatenate:
 +      return false;
 +    default:
 +      return true;
