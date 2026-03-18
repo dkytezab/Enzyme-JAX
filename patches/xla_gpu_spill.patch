@@ -440,7 +440,7 @@ index c150db6dde..815181da4e 100644
        const EstimateRunTimeData& producer_runtime,
        const EstimateRunTimeData& consumer_runtime,
 diff --git a/xla/service/gpu/model/gpu_performance_model_base.cc b/xla/service/gpu/model/gpu_performance_model_base.cc
-index 3c2e2eafbd..a80d6f9fe6 100644
+index 3c2e2eafbd..af31f162c8 100644
 --- a/xla/service/gpu/model/gpu_performance_model_base.cc
 +++ b/xla/service/gpu/model/gpu_performance_model_base.cc
 @@ -18,6 +18,7 @@ limitations under the License.
@@ -520,7 +520,7 @@ index 3c2e2eafbd..a80d6f9fe6 100644
  /*static*/
  LaunchDimensions GpuPerformanceModelBase::EstimateFusionLaunchDimensions(
      const HloFusionAnalysis& fusion_analysis, mlir::MLIRContext* mlir_context) {
-@@ -392,6 +433,439 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
+@@ -392,6 +433,454 @@ absl::Duration GpuPerformanceModelBase::CombineComputeAndMemoryAccessTime(
           std::min(compute_time, memory_access_time) * kMemoryComputeParallelism;
  }
  
@@ -764,6 +764,21 @@ index 3c2e2eafbd..a80d6f9fe6 100644
 +          /*use_diagnostic_handler=*/false));
 +
 +  using namespace llvm;
++
++
++  PassBuilder PB;
++  LoopAnalysisManager LAM;
++  FunctionAnalysisManager FAM;
++  CGSCCAnalysisManager CGAM;
++  ModuleAnalysisManager MAM;
++  PB.registerModuleAnalyses(MAM);
++  PB.registerFunctionAnalyses(FAM);
++  PB.registerLoopAnalyses(LAM);
++  PB.registerCGSCCAnalyses(CGAM);
++  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
++  auto PM = PB.buildModuleSimplificationPipeline(OptimizationLevel::O1,
++                                                 ThinOrFullLTOPhase::None);
++  PM.run(*llvm_module.get(), MAM);
 +
 +  auto result = EstimateRegisterUsageFromModule(llvm_module.get());
 +
@@ -1014,7 +1029,7 @@ index ea9c07234b..98cd5a9644 100644
    static void VLogOperandRead(const HloInstruction* operand,
                                int64_t n_bytes_total, int64_t n_bytes_net,
 diff --git a/xla/service/gpu/model/gpu_performance_model_base_test.cc b/xla/service/gpu/model/gpu_performance_model_base_test.cc
-index 8899249608..34546998e5 100644
+index 8899249608..f1b0ce2c03 100644
 --- a/xla/service/gpu/model/gpu_performance_model_base_test.cc
 +++ b/xla/service/gpu/model/gpu_performance_model_base_test.cc
 @@ -16,6 +16,7 @@ limitations under the License.
@@ -1038,7 +1053,7 @@ index 8899249608..34546998e5 100644
  
  namespace xla {
  namespace gpu {
-@@ -351,6 +358,2771 @@ TEST_F(GpuPerformanceModelBaseTest, CalculatePeakF64OpsPerNsH100) {
+@@ -351,6 +358,2772 @@ TEST_F(GpuPerformanceModelBaseTest, CalculatePeakF64OpsPerNsH100) {
    EXPECT_LT(flops_per_ns, 68000);
  }
  
@@ -3366,6 +3381,7 @@ index 8899249608..34546998e5 100644
 +  
 +  EXPECT_EQ(register_usage.registers_per_thread, 255);
 +  EXPECT_GT(register_usage.spilled_bytes_accessed, 30000);
++  EXPECT_LT(register_usage.spilled_bytes_accessed, 60000);
 +}
 +
 +TEST_F(GpuPerformanceModelBaseTest, EstimateRegisterUsageOfMediumKernel) {
