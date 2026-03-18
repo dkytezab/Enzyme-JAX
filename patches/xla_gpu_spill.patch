@@ -236,7 +236,7 @@ index 38b83ba9dd..23b1fdd8ca 100644
          "@com_google_absl//absl/log:check",
          "@com_google_absl//absl/time",
 diff --git a/xla/service/gpu/model/gpu_performance_model.cc b/xla/service/gpu/model/gpu_performance_model.cc
-index 956bc9f926..69428d6e4c 100644
+index 956bc9f926..7f8f59c5f4 100644
 --- a/xla/service/gpu/model/gpu_performance_model.cc
 +++ b/xla/service/gpu/model/gpu_performance_model.cc
 @@ -17,17 +17,24 @@ limitations under the License.
@@ -287,11 +287,11 @@ index 956bc9f926..69428d6e4c 100644
 -      mlir_context_(mlir_context) {};
 +      mlir_context_(mlir_context) {}
 +
-+static absl::StatusOr<GpuPerformanceModelBase::RegisterUsage> cached_register_estimate(
++static absl::StatusOr<RegisterUsage> cached_register_estimate(
 +    GpuPerformanceModelCache& cache, const HloInstruction* instr,
 +    const se::DeviceDescription& device_info) {
 +  if (instr->opcode() != HloOpcode::kFusion) {
-+    return GpuPerformanceModelBase::RegisterUsage{1, 0};
++    return RegisterUsage{1, 0};
 +  }
 +  auto found = cache.register_usage_.find(instr);
 +  if (found != cache.register_usage_.end()) {
@@ -306,7 +306,7 @@ index 956bc9f926..69428d6e4c 100644
 +  return register_usage;
 +}
 +
-+static absl::StatusOr<GpuPerformanceModelBase::RegisterUsage> cached_fusion_register_estimate(
++static absl::StatusOr<RegisterUsage> cached_fusion_register_estimate(
 +    GpuPerformanceModelCache& cache,
 +    const HloInstruction* producer, const HloInstruction* consumer,
 +    const se::DeviceDescription& device_info) {
@@ -320,7 +320,7 @@ index 956bc9f926..69428d6e4c 100644
 +    return consumer_register_usage;
 +  }
 +  if (producer_register_usage.value().registers_per_thread + consumer_register_usage.value().registers_per_thread < 255) {
-+    return GpuPerformanceModelBase::RegisterUsage{
++    return RegisterUsage{
 +        producer_register_usage.value().registers_per_thread + consumer_register_usage.value().registers_per_thread, 0};
 +  }
 +
