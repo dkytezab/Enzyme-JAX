@@ -28798,6 +28798,92 @@ struct DotGeneralDistributiveSimplify
   }
 };
 
+// applies distributive property to op(mul(a,b), mul(a,c)) operations and converts them to mul(a, op(b, c))
+struct MultiplyDistributiveSimplify
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     MultiplyDistributiveSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::AddOp, MultiplyDistributiveSimplify>::CheckedOpRewritePattern;
+
+  void collectCandidateOperands(Operation* op, SmallVector<stablehlo::MulOp> &candidates) const {
+    // transverse the graph up to find all the mul ops that are connected with the current op))
+    for (auto operandValue : op->getOperands()) {
+      auto* operandOp = operandValue.getDefiningOp();
+      if (!isOnlyUsedInOperation(operandOp, op))
+        continue;
+
+      if (auto mulOp = dyn_cast<stablehlo::MulOp>(operandOp)) {
+        candidates.push_back(mulOp);
+      } else if (auto addOp = dyn_cast<stablehlo::AddOp>(operandOp)) {
+        collectCandidateOperands(addOp, candidates);
+      }
+      // TODO generalize to `SubstractOp` and combinations of `AddOp` and `SubstractOp`
+    }
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op, PatternRewriter &rewriter) const {
+    // let the last AddOp handle the pattern
+    auto users = op.getResult().getUsers();
+    if (llvm::hasSingleElement(users) && isa<stablehlo::AddOp>(*users.begin()))
+      return failure(); // TODO or should we return success?
+
+    printf("[@] Looking at AddOp: \n");
+    op.dump();
+
+    SmallVector<stablehlo::MulOp> mulOps;
+    collectCandidateOperands(op, mulOps);
+
+    printf("[@] Found %ld mulOps MulOps\n", mulOps.size());
+
+    if (mulOps.size() <= 1)
+      return failure();
+
+    llvm::SmallDenseMap<Value, SmallVector<Value>> actsWith;
+    for (auto mulOp : mulOps) {
+      auto a = mulOp.getLhs();
+      auto b = mulOp.getRhs();
+      actsWith[a].push_back(b);
+      actsWith[b].push_back(a);
+    }
+
+    printf("[@] candidates actsWith:\n");
+    for (auto [candidate, colleagues] : actsWith) {
+      candidate.dump();
+      printf("  ...used %ld times\n", colleagues.size());
+    }
+
+    SmallVector<Value> selected;
+    for (auto [candidate, colleagues] : actsWith)
+      if (colleagues.size() > 1)
+        selected.push_back(candidate);
+
+    printf("[@] %ld selected candidates:\n", selected.size());
+    for (auto candidate : selected) {
+      candidate.dump();
+    }
+
+    if (selected.size() == 0)
+      return failure();
+
+    // rewrite only the most benefitial, rely on subsequent calls to continue rewriting
+    llvm::max_element(selected, [&](Value a, Value b) {return actsWith[a].size() < actsWith[b].size(); });
+    auto winner = selected[0];
+
+    printf("[@] ====BEGIN====\n");
+    winner.dump();
+    printf("[@] ====END======\n");
+
+
+    // auto addOp = stablehlo::AddOp::create(rewriter, op.getLoc(), a, b);
+    // auto mulOp = stablehlo::MulOp::create(rewriter, op.getLoc(), winner, addOp);
+
+    // rewriter.replaceOp(op, mulOp.getResult());
+
+    // TODO rewrite adds
+    return failure();
+  }
+};
+
 struct TrivialReduceWindowToReduceOp
     : public CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
                                      TrivialReduceWindowToReduceOp> {
@@ -34960,6 +35046,7 @@ struct EnzymeHLOOptPass
         SubtractMultiplyConstToAddMulConst,
         ReduceMulToDotGeneral,
         SplitReduceAddMulToAddDotGeneral,
+        MultiplyDistributiveSimplify,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
