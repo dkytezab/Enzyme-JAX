@@ -28798,17 +28798,21 @@ struct DotGeneralDistributiveSimplify
   }
 };
 
-// applies distributive property to op(mul(a,b), mul(a,c)) operations and converts them to mul(a, op(b, c))
+// applies distributive property to op(mul(a,b), mul(a,c)) operations and
+// converts them to mul(a, op(b, c))
 struct MultiplyDistributiveSimplify
     : public CheckedOpRewritePattern<stablehlo::AddOp,
                                      MultiplyDistributiveSimplify> {
   using CheckedOpRewritePattern<
       stablehlo::AddOp, MultiplyDistributiveSimplify>::CheckedOpRewritePattern;
 
-  void collectCandidateOperands(Operation* op, SmallVector<stablehlo::MulOp> &candidates) const {
-    // transverse the graph up to find all the mul ops that are connected with the current op))
+  void
+  collectCandidateOperands(Operation *op,
+                           SmallVector<stablehlo::MulOp> &candidates) const {
+    // transverse the graph up to find all the mul ops that are connected with
+    // the current op))
     for (auto operandValue : op->getOperands()) {
-      auto* operandOp = operandValue.getDefiningOp();
+      auto *operandOp = operandValue.getDefiningOp();
       if (!isOnlyUsedInOperation(operandOp, op))
         continue;
 
@@ -28817,23 +28821,25 @@ struct MultiplyDistributiveSimplify
       } else if (auto addOp = dyn_cast<stablehlo::AddOp>(operandOp)) {
         collectCandidateOperands(addOp, candidates);
       }
-      // TODO generalize to `SubstractOp` and combinations of `AddOp` and `SubstractOp`
+      // TODO generalize to `SubstractOp` and combinations of `AddOp` and
+      // `SubstractOp`
     }
   }
 
-  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op, PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
     // let the last AddOp handle the pattern
     auto users = op.getResult().getUsers();
     if (llvm::hasSingleElement(users) && isa<stablehlo::AddOp>(*users.begin()))
       return failure(); // TODO or should we return success?
 
-    printf("[@] Looking at AddOp: \n");
-    op.dump();
+    // printf("[@] Looking at AddOp: \n");
+    // op.dump();
 
     SmallVector<stablehlo::MulOp> mulOps;
     collectCandidateOperands(op, mulOps);
 
-    printf("[@] Found %ld mulOps MulOps\n", mulOps.size());
+    // printf("[@] Found %ld mulOps MulOps\n", mulOps.size());
 
     if (mulOps.size() <= 1)
       return failure();
@@ -28846,41 +28852,91 @@ struct MultiplyDistributiveSimplify
       actsWith[b].push_back(a);
     }
 
-    printf("[@] candidates actsWith:\n");
-    for (auto [candidate, colleagues] : actsWith) {
-      candidate.dump();
-      printf("  ...used %ld times\n", colleagues.size());
-    }
+    // printf("[@] candidates actsWith:\n");
+    // for (auto [candidate, colleagues] : actsWith) {
+    //   candidate.dump();
+    //   printf("  ...used %ld times\n", colleagues.size());
+    // }
 
     SmallVector<Value> selected;
     for (auto [candidate, colleagues] : actsWith)
       if (colleagues.size() > 1)
         selected.push_back(candidate);
 
-    printf("[@] %ld selected candidates:\n", selected.size());
-    for (auto candidate : selected) {
-      candidate.dump();
-    }
+    // printf("[@] %ld selected candidates:\n", selected.size());
+    // for (auto candidate : selected) {
+    //   candidate.dump();
+    // }
 
     if (selected.size() == 0)
       return failure();
 
-    // rewrite only the most benefitial, rely on subsequent calls to continue rewriting
-    llvm::max_element(selected, [&](Value a, Value b) {return actsWith[a].size() < actsWith[b].size(); });
+    // rewrite only the most benefitial, rely on subsequent calls to continue
+    // rewriting
+    llvm::max_element(selected, [&](Value a, Value b) {
+      return actsWith[a].size() < actsWith[b].size();
+    });
     auto winner = selected[0];
+    auto a = actsWith[winner][0];
+    auto b = actsWith[winner][1];
 
     printf("[@] ====BEGIN====\n");
     winner.dump();
+    a.dump();
+    b.dump();
+
+    // printf("users of a:\n");
+    // for (auto user : a.getUsers()) {
+    //   user->dump();
+    // }
+    // printf("users of b:\n");
+    // for (auto user : b.getUsers()) {
+    //   user->dump();
+    // }
     printf("[@] ====END======\n");
 
+    // simplify the distributed equation to a non-distributed one (one less
+    // multiply)
+    auto addOp = stablehlo::AddOp::create(rewriter, op.getLoc(), a, b);
+    auto mulOp = stablehlo::MulOp::create(rewriter, op.getLoc(), winner, addOp);
 
-    // auto addOp = stablehlo::AddOp::create(rewriter, op.getLoc(), a, b);
-    // auto mulOp = stablehlo::MulOp::create(rewriter, op.getLoc(), winner, addOp);
+    // rewrite adds connected to the selected mul ops
+    // - `a` gets replaced by a zero, which will be folded
+    // - `b` gets replaced by the new mulOp result
+    assert(!llvm::hasSingleElement(a.getUsers()));
+    assert(!llvm::hasSingleElement(b.getUsers()));
+    auto addUser_a = cast<stablehlo::AddOp>(*a.getUsers().begin());
+    auto addUser_b = cast<stablehlo::AddOp>(*b.getUsers().begin());
 
-    // rewriter.replaceOp(op, mulOp.getResult());
+    auto lhsValue_a =
+        addUser_a.getLhs() == a ? addUser_a.getRhs() : addUser_a.getLhs();
+    auto lhsValue_b =
+        addUser_b.getLhs() == b ? addUser_b.getRhs() : addUser_b.getLhs();
 
-    // TODO rewrite adds
-    return failure();
+    auto type = winner.getType();
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type, cast<ElementsAttr>(makeAttr(type, 0)));
+
+    // rewriter.replaceOpWithNewOp<stablehlo::AddOp>(addUser_a, type,
+    // lhsValue_a,
+    //                                               zero.getResult());
+    rewriter.moveOpBefore(zero.getOperation(), addUser_a.getOperation());
+    rewriter.startOpModification(addUser_a.getOperation());
+    addUser_a.setOperand(0, lhsValue_a);
+    addUser_a.setOperand(1, zero.getResult());
+    rewriter.finalizeOpModification(addUser_a.getOperation());
+
+    // rewriter.replaceOpWithNewOp<stablehlo::AddOp>(addUser_b, type,
+    // lhsValue_b, mulOp.getResult());
+    rewriter.moveOpBefore(mulOp.getOperation(), addUser_b.getOperation());
+    rewriter.startOpModification(addUser_b.getOperation());
+    addUser_b.setOperand(0, lhsValue_b);
+    addUser_b.setOperand(1, mulOp.getResult());
+    rewriter.finalizeOpModification(addUser_b.getOperation());
+
+    op.getOperation()->getParentOp()->dump();
+
+    return success();
   }
 };
 
