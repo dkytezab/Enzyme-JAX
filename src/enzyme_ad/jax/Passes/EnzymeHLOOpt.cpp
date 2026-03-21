@@ -28831,15 +28831,10 @@ struct MultiplyDistributiveSimplify
     // let the last AddOp handle the pattern
     auto users = op.getResult().getUsers();
     if (llvm::hasSingleElement(users) && isa<stablehlo::AddOp>(*users.begin()))
-      return failure(); // TODO or should we return success?
-
-    // printf("[@] Looking at AddOp: \n");
-    // op.dump();
+      return failure();
 
     SmallVector<stablehlo::MulOp> mulOps;
     collectCandidateOperands(op, mulOps);
-
-    // printf("[@] Found %ld mulOps MulOps\n", mulOps.size());
 
     if (mulOps.size() <= 1)
       return failure();
@@ -28852,21 +28847,10 @@ struct MultiplyDistributiveSimplify
       actsWith[b].push_back(a);
     }
 
-    // printf("[@] candidates actsWith:\n");
-    // for (auto [candidate, colleagues] : actsWith) {
-    //   candidate.dump();
-    //   printf("  ...used %ld times\n", colleagues.size());
-    // }
-
     SmallVector<Value> selected;
     for (auto [candidate, colleagues] : actsWith)
       if (colleagues.size() > 1)
         selected.push_back(candidate);
-
-    // printf("[@] %ld selected candidates:\n", selected.size());
-    // for (auto candidate : selected) {
-    //   candidate.dump();
-    // }
 
     if (selected.size() == 0)
       return failure();
@@ -28880,61 +28864,63 @@ struct MultiplyDistributiveSimplify
     auto a = actsWith[winner][0];
     auto b = actsWith[winner][1];
 
-    printf("[@] ====BEGIN====\n");
-    winner.dump();
-    a.dump();
-    b.dump();
+    // rewrite adds connected to the selected mul ops
+    // - `a` gets replaced by a zero, which will be folded
+    // - `b` gets replaced by the new mulOp result
+    Value mulUser_a;
+    for (auto mulOp : mulOps) {
+      if (mulOp.getLhs() == winner && mulOp.getRhs() == a || mulOp.getLhs() == a && mulOp.getRhs() == winner) {
+        mulUser_a = mulOp.getResult();
+        break;
+      }
+    }
 
-    // printf("users of a:\n");
-    // for (auto user : a.getUsers()) {
-    //   user->dump();
-    // }
-    // printf("users of b:\n");
-    // for (auto user : b.getUsers()) {
-    //   user->dump();
-    // }
-    printf("[@] ====END======\n");
+    Value mulUser_b;
+    for (auto mulOp : mulOps) {
+      if (mulOp.getResult() != mulUser_a && (mulOp.getLhs() == winner && mulOp.getRhs() == b || mulOp.getLhs() == b && mulOp.getRhs() == winner)) {
+        mulUser_b = mulOp.getResult();
+        break;
+      }
+    }
+
+    assert(llvm::hasSingleElement(mulUser_a.getUsers()));
+    assert(llvm::hasSingleElement(mulUser_b.getUsers()));
+    auto addUser_a = cast<stablehlo::AddOp>(*mulUser_a.getUsers().begin());
+    auto addUser_b = cast<stablehlo::AddOp>(*mulUser_b.getUsers().begin());
+
+    if (addUser_a == addUser_b) {
+      // TODO decide what to do... do we replace the multiply for a multiply and an add?
+      // it would be same number of ops but one less mul and one more add
+      return failure();
+    }
+
+    auto lhsValue_a =
+        addUser_a.getLhs() == a ? addUser_a.getLhs() : addUser_a.getRhs();
+    auto lhsValue_b =
+        addUser_b.getLhs() == b ? addUser_b.getLhs() : addUser_b.getRhs();
 
     // simplify the distributed equation to a non-distributed one (one less
     // multiply)
     auto addOp = stablehlo::AddOp::create(rewriter, op.getLoc(), a, b);
     auto mulOp = stablehlo::MulOp::create(rewriter, op.getLoc(), winner, addOp);
 
-    // rewrite adds connected to the selected mul ops
-    // - `a` gets replaced by a zero, which will be folded
-    // - `b` gets replaced by the new mulOp result
-    assert(!llvm::hasSingleElement(a.getUsers()));
-    assert(!llvm::hasSingleElement(b.getUsers()));
-    auto addUser_a = cast<stablehlo::AddOp>(*a.getUsers().begin());
-    auto addUser_b = cast<stablehlo::AddOp>(*b.getUsers().begin());
-
-    auto lhsValue_a =
-        addUser_a.getLhs() == a ? addUser_a.getRhs() : addUser_a.getLhs();
-    auto lhsValue_b =
-        addUser_b.getLhs() == b ? addUser_b.getRhs() : addUser_b.getLhs();
-
     auto type = winner.getType();
     auto zero = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type, cast<ElementsAttr>(makeAttr(type, 0)));
 
-    // rewriter.replaceOpWithNewOp<stablehlo::AddOp>(addUser_a, type,
-    // lhsValue_a,
-    //                                               zero.getResult());
     rewriter.moveOpBefore(zero.getOperation(), addUser_a.getOperation());
     rewriter.startOpModification(addUser_a.getOperation());
     addUser_a.setOperand(0, lhsValue_a);
     addUser_a.setOperand(1, zero.getResult());
     rewriter.finalizeOpModification(addUser_a.getOperation());
 
-    // rewriter.replaceOpWithNewOp<stablehlo::AddOp>(addUser_b, type,
-    // lhsValue_b, mulOp.getResult());
     rewriter.moveOpBefore(mulOp.getOperation(), addUser_b.getOperation());
+    rewriter.moveOpBefore(addOp.getOperation(), mulOp.getOperation());
+
     rewriter.startOpModification(addUser_b.getOperation());
     addUser_b.setOperand(0, lhsValue_b);
     addUser_b.setOperand(1, mulOp.getResult());
     rewriter.finalizeOpModification(addUser_b.getOperation());
-
-    op.getOperation()->getParentOp()->dump();
 
     return success();
   }
