@@ -165,6 +165,7 @@ jobs:
           if !isempty("${{ matrix.reactant_commit }}")
               # Install specific commit of Reactant, if necessary
               Pkg.add([
+                  PackageSpec(; name="ReactantCore", rev="${{ matrix.reactant_commit }}"),
                   PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
               ])
           end
