@@ -28869,7 +28869,8 @@ struct MultiplyDistributiveSimplify
     // - `b` gets replaced by the new mulOp result
     Value mulUser_a;
     for (auto mulOp : mulOps) {
-      if (mulOp.getLhs() == winner && mulOp.getRhs() == a || mulOp.getLhs() == a && mulOp.getRhs() == winner) {
+      if (mulOp.getLhs() == winner && mulOp.getRhs() == a ||
+          mulOp.getLhs() == a && mulOp.getRhs() == winner) {
         mulUser_a = mulOp.getResult();
         break;
       }
@@ -28877,7 +28878,9 @@ struct MultiplyDistributiveSimplify
 
     Value mulUser_b;
     for (auto mulOp : mulOps) {
-      if (mulOp.getResult() != mulUser_a && (mulOp.getLhs() == winner && mulOp.getRhs() == b || mulOp.getLhs() == b && mulOp.getRhs() == winner)) {
+      if (mulOp.getResult() != mulUser_a &&
+          (mulOp.getLhs() == winner && mulOp.getRhs() == b ||
+           mulOp.getLhs() == b && mulOp.getRhs() == winner)) {
         mulUser_b = mulOp.getResult();
         break;
       }
@@ -28889,15 +28892,16 @@ struct MultiplyDistributiveSimplify
     auto addUser_b = cast<stablehlo::AddOp>(*mulUser_b.getUsers().begin());
 
     if (addUser_a == addUser_b) {
-      // TODO decide what to do... do we replace the multiply for a multiply and an add?
-      // it would be same number of ops but one less mul and one more add
+      // TODO decide what to do... do we replace the multiply for a multiply and
+      // an add? it would be same number of ops but one less mul and one more
+      // add
       return failure();
     }
 
-    auto lhsValue_a =
-        addUser_a.getLhs() == mulUser_a ? addUser_a.getRhs() : addUser_a.getLhs();
-    auto lhsValue_b =
-        addUser_b.getLhs() == mulUser_b ? addUser_b.getRhs() : addUser_b.getLhs();
+    auto lhsValue_a = addUser_a.getLhs() == mulUser_a ? addUser_a.getRhs()
+                                                      : addUser_a.getLhs();
+    auto lhsValue_b = addUser_b.getLhs() == mulUser_b ? addUser_b.getRhs()
+                                                      : addUser_b.getLhs();
 
     // simplify the distributed equation to a non-distributed one (one less
     // multiply)
