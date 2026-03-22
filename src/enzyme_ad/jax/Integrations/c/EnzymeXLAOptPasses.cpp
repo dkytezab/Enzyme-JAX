@@ -120,6 +120,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dot_general_simplify<16>");
   list.push_back("transpose_simplify<16>");
   list.push_back("reshape_empty_broadcast<1>");
+  list.push_back("reshape_broadcast<1>");
   list.push_back("broadcast_reshape<1>");
   list.push_back("transpose_dot_reorder<1>");
   list.push_back("dot_transpose<1>");
@@ -145,7 +146,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("if_remove_unused");
   list.push_back("transpose_reshape_to_broadcast");
   list.push_back("reshape_transpose_to_broadcast");
-  list.push_back("reshape_broadcast");
   list.push_back("dus_dus");
   list.push_back("dus_dus_concat");
   list.push_back("abs_positive_simplify");

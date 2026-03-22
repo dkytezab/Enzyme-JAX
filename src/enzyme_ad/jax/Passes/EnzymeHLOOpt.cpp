@@ -6915,9 +6915,11 @@ struct BroadcastReshape final
     }
     while (pre_reshape_idx !=
            reshape.getOperand().getType().getShape().size()) {
-      auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
-      assert(ival == 1);
-      (void)ival;
+      if (reshape.getOperand().getType().getShape()[pre_reshape_idx] != 1) {
+        LLVM_DEBUG(llvm::dbgs() << "bcast: " << op << "\n";
+                   llvm::dbgs() << "reshape: " << reshape << "\n\n");
+        return failure();
+      }
 
       size_t nextdim = 0;
       if (postidx == oneOutIdxs.size()) {
