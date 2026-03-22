@@ -28913,7 +28913,7 @@ struct MultiplyDistributiveSimplify
         rewriter, op.getLoc(), type, cast<ElementsAttr>(makeAttr(type, 0)));
 
     DominanceInfo di;
-    if (di.dominates(addUser_a.getOperation(), addUser_b.getOperation());) {
+    if (di.dominates(addUser_a.getOperation(), addUser_b.getOperation())) {
       rewriter.moveOpBefore(zero.getOperation(), addUser_a.getOperation());
       rewriter.moveOpBefore(addOp.getOperation(), addUser_a.getOperation());
       rewriter.moveOpAfter(mulOp.getOperation(), addOp.getOperation());
