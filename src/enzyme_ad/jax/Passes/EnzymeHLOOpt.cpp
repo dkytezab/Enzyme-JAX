@@ -28895,9 +28895,9 @@ struct MultiplyDistributiveSimplify
     }
 
     auto lhsValue_a =
-        addUser_a.getLhs() == a ? addUser_a.getLhs() : addUser_a.getRhs();
+        addUser_a.getLhs() == mulUser_a ? addUser_a.getRhs() : addUser_a.getLhs();
     auto lhsValue_b =
-        addUser_b.getLhs() == b ? addUser_b.getLhs() : addUser_b.getRhs();
+        addUser_b.getLhs() == mulUser_b ? addUser_b.getRhs() : addUser_b.getLhs();
 
     // simplify the distributed equation to a non-distributed one (one less
     // multiply)
@@ -28908,14 +28908,21 @@ struct MultiplyDistributiveSimplify
     auto zero = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type, cast<ElementsAttr>(makeAttr(type, 0)));
 
-    rewriter.moveOpBefore(zero.getOperation(), addUser_a.getOperation());
+    DominanceInfo di;
+    if (di.dominates(addUser_a.getOperation(), addUser_b.getOperation());) {
+      rewriter.moveOpBefore(zero.getOperation(), addUser_a.getOperation());
+      rewriter.moveOpBefore(addOp.getOperation(), addUser_a.getOperation());
+      rewriter.moveOpAfter(mulOp.getOperation(), addOp.getOperation());
+    } else {
+      rewriter.moveOpBefore(zero.getOperation(), addUser_b.getOperation());
+      rewriter.moveOpBefore(addOp.getOperation(), addUser_b.getOperation());
+      rewriter.moveOpAfter(mulOp.getOperation(), addOp.getOperation());
+    }
+
     rewriter.startOpModification(addUser_a.getOperation());
     addUser_a.setOperand(0, lhsValue_a);
     addUser_a.setOperand(1, zero.getResult());
     rewriter.finalizeOpModification(addUser_a.getOperation());
-
-    rewriter.moveOpBefore(mulOp.getOperation(), addUser_b.getOperation());
-    rewriter.moveOpBefore(addOp.getOperation(), mulOp.getOperation());
 
     rewriter.startOpModification(addUser_b.getOperation());
     addUser_b.setOperand(0, lhsValue_b);
