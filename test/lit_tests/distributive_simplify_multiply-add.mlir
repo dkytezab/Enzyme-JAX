@@ -68,27 +68,26 @@ func.func @opt_multi(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4
 
 // CHECK: func.func @opt_multi(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>, %arg3: tensor<4xf64>, %arg4: tensor<4xf64>, %arg5: tensor<4xf64>) -> tensor<4xf64> {
 // CHECK-NEXT:     %0 = stablehlo.add %arg1, %arg0 : tensor<4xf64>
-// CHECK-NEXT:     %2 = stablehlo.add %0, %arg4 : tensor<4xf64>
-// CHECK-NEXT:     %3 = stablehlo.multiply %arg5, %2 : tensor<4xf64>
-// CHECK-NEXT:     %4 = stablehlo.add %arg2, %3 : tensor<4xf64>
-// CHECK-NEXT:     %5 = stablehlo.add %arg3, %4 : tensor<4xf64>
-// CHECK-NEXT:     return %5 : tensor<4xf64>
+// CHECK-NEXT:     %1 = stablehlo.add %0, %arg4 : tensor<4xf64>
+// CHECK-NEXT:     %2 = stablehlo.multiply %arg5, %1 : tensor<4xf64>
+// CHECK-NEXT:     %3 = stablehlo.add %arg3, %arg2 : tensor<4xf64>
+// CHECK-NEXT:     %4 = stablehlo.add %3, %2 : tensor<4xf64>
+// CHECK-NEXT:     return %4 : tensor<4xf64>
 // CHECK-NEXT: }
 
-func.func @no_opt_benefit(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>, %arg3: tensor<4xf64>) -> tensor<4xf64> {
-    %0 = stablehlo.multiply %arg0, %arg3 : tensor<4xf64>
-    %1 = stablehlo.multiply %arg3, %arg1 : tensor<4xf64>
+func.func @no_opt_benefit(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>) -> tensor<4xf64> {
+    %0 = stablehlo.multiply %arg0, %arg2 : tensor<4xf64>
+    %1 = stablehlo.multiply %arg2, %arg1 : tensor<4xf64>
     %2 = stablehlo.add %0, %1 : tensor<4xf64>
     return %2 : tensor<4xf64>
 }
 
-// func.func @no_opt_benefit(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>) -> tensor<4xf64> {
-//     %cst = stablehlo.constant dense<0.58333333333333326> : tensor<4xf64>
-//     %0 = stablehlo.multiply %arg0, %cst : tensor<4xf64>
-//     %1 = stablehlo.multiply %cst, %arg1 : tensor<4xf64>
-//     %2 = stablehlo.add %0, %1 : tensor<4xf64>
-//     return %2 : tensor<4xf64>
-// }
+// CHECK: func.func @no_opt_benefit(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>) -> tensor<4xf64> {
+// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %arg2 : tensor<4xf64>
+// CHECK-NEXT:     %1 = stablehlo.multiply %arg2, %arg1 : tensor<4xf64>
+// CHECK-NEXT:     %2 = stablehlo.add %0, %1 : tensor<4xf64>
+// CHECK-NEXT:     return %2 : tensor<4xf64>
+// CHECK-NEXT: }
 
 func.func @no_opt_multiuse_add_inbetween(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2: tensor<4xf64>, %arg3: tensor<4xf64>, %arg4: tensor<4xf64>, %arg5: tensor<4xf64>) -> tensor<4xf64> {
     %0 = stablehlo.multiply %arg0, %arg5 : tensor<4xf64>
