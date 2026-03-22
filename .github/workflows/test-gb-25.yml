@@ -23,6 +23,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
+env:
+  JULIA_MAX_NUM_PRECOMPILE_FILES: 3
+
 jobs:
   test-gb-25:
     name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
