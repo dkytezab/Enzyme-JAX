@@ -14,7 +14,7 @@ index e9b8a893ac..52021f8e4f 100644
 +        /*pipeline_use_tree=*/true,
 +        /*process_different_sized_ops=*/true,
 +        /*pipelining_direction=*/
-+        collective_pipeliner_utils::PipeliningDirection::kForward,
++        collective_pipeliner_utils::PipeliningDirection::kBackward,
 +        /*should_process=*/HloPredicateIsOp<HloOpcode::kCollectivePermute>,
 +        /*acceptable_formatting=*/HloPredicateTrue,
 +        /*reuse_pipelined_op_buffer=*/HloPredicateFalse,
