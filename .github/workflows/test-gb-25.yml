@@ -24,6 +24,7 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 env:
+  JULIA_PKG_SERVER_REGISTRY_PREFERENCE: 'eager'
   JULIA_MAX_NUM_PRECOMPILE_FILES: 3
 
 jobs:
