@@ -430,6 +430,7 @@ def optimization_passes(
             "dot_general_only_diagonal_access",
             "transpose_symmetric_simplify",
             "syrk_simplify_output_uplo",
+            "lu_factorization_tri_simplify"
         ]
 
     if enable_slice_to_batch_passes:
