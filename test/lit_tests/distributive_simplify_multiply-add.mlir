@@ -132,3 +132,15 @@ func.func @no_opt_multiuse_mul(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>, %arg2
 // CHECK-NEXT:     %6 = stablehlo.divide %5, %0 : tensor<4xf64>
 // CHECK-NEXT:     return %6 : tensor<4xf64>
 // CHECK-NEXT: }
+
+func.func @no_opt_single_mul(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>) -> tensor<4xf64> {
+    %0 = stablehlo.multiply %arg0, %arg1 : tensor<4xf64>
+    %1 = stablehlo.add %0, %0 : tensor<4xf64>
+    return %1 : tensor<4xf64>
+}
+
+// CHECK: func.func @no_opt_single_mul(%arg0: tensor<4xf64>, %arg1: tensor<4xf64>) -> tensor<4xf64> {
+// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %arg1 : tensor<4xf64>
+// CHECK-NEXT:     %1 = stablehlo.add %0, %0 : tensor<4xf64>
+// CHECK-NEXT:     return %1 : tensor<4xf64>
+// CHECK-NEXT: }
