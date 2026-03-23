@@ -28886,10 +28886,31 @@ struct MultiplyDistributiveSimplify
       }
     }
 
-    assert(llvm::hasSingleElement(mulUser_a.getUsers()));
-    assert(llvm::hasSingleElement(mulUser_b.getUsers()));
-    auto addUser_a = cast<stablehlo::AddOp>(*mulUser_a.getUsers().begin());
-    auto addUser_b = cast<stablehlo::AddOp>(*mulUser_b.getUsers().begin());
+    // case mulUser_a == mulUser_b and addUser_a == addUser_b
+    if (!mulUser_b || mulUser_a == mulUser_b)
+      return failure();
+
+    // wait for CSE to clean up the graph before rewriting
+    if (OperationEquivalence::isEquivalentTo(
+            mulUser_a.getDefiningOp(), mulUser_b.getDefiningOp(),
+            (OperationEquivalence::Flags)(
+                OperationEquivalence::IgnoreLocations |
+                OperationEquivalence::IgnoreDiscardableAttrs)))
+      return failure();
+
+    SmallVector<Operation *> uniqueMulUsers_a, uniqueMulUsers_b;
+    for (auto *user : mulUser_a.getUsers())
+      uniqueMulUsers_a.push_back(user);
+    for (auto *user : mulUser_b.getUsers())
+      uniqueMulUsers_b.push_back(user);
+
+    llvm::unique(uniqueMulUsers_a);
+    llvm::unique(uniqueMulUsers_b);
+    assert(llvm::hasSingleElement(uniqueMulUsers_a));
+    assert(llvm::hasSingleElement(uniqueMulUsers_b));
+
+    auto addUser_a = cast<stablehlo::AddOp>(uniqueMulUsers_a[0]);
+    auto addUser_b = cast<stablehlo::AddOp>(uniqueMulUsers_b[0]);
 
     if (addUser_a == addUser_b) {
       // TODO decide what to do... do we replace the multiply for a multiply and
