@@ -12775,9 +12775,6 @@ struct RedirectSliceThroughSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
                                     PatternRewriter &rewriter) const {
-    if (!llvm::hasSingleElement(sliceOp.getOperand().getUsers()))
-      return failure();
-
     // TODO currently force strides[i] == 1 for simplicity, we need to
     // generalize it
     if (!llvm::all_of(sliceOp.getStrides(),
@@ -12785,6 +12782,9 @@ struct RedirectSliceThroughSlice final
       return failure();
 
     for (auto *prev : sliceOp.getOperand().getUsers()) {
+      if (prev == sliceOp.getOperation())
+        continue;
+
       // TODO generalize to dynamic_slice
       if (auto prevSlice = dyn_cast<stablehlo::SliceOp>(prev)) {
         // TODO currently force strides[i] == 1 for simplicity, we need to
@@ -12805,14 +12805,11 @@ struct RedirectSliceThroughSlice final
 
         // compute indices shift
         SmallVector<int64_t> newStarts, newLimits, newStrides;
-        for (auto &&[pstart, sstart] : llvm::zip(prevSlice.getStartIndices(),
-                                                 sliceOp.getStartIndices())) {
-          newStarts.push_back(sstart - pstart);
-        }
-
-        for (auto &&[plimit, slimit] : llvm::zip(prevSlice.getLimitIndices(),
+        for (auto &&[pstart, sstart, slimit] : llvm::zip(prevSlice.getStartIndices(),
+                                                 sliceOp.getStartIndices(),
                                                  sliceOp.getLimitIndices())) {
-          newLimits.push_back(slimit - plimit);
+          newStarts.push_back(sstart - pstart);
+          newLimits.push_back(slimit - pstart);
         }
 
         rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
