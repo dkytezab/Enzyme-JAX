@@ -12805,9 +12805,9 @@ struct RedirectSliceThroughSlice final
 
         // compute indices shift
         SmallVector<int64_t> newStarts, newLimits, newStrides;
-        for (auto &&[pstart, sstart, slimit] : llvm::zip(prevSlice.getStartIndices(),
-                                                 sliceOp.getStartIndices(),
-                                                 sliceOp.getLimitIndices())) {
+        for (auto &&[pstart, sstart, slimit] :
+             llvm::zip(prevSlice.getStartIndices(), sliceOp.getStartIndices(),
+                       sliceOp.getLimitIndices())) {
           newStarts.push_back(sstart - pstart);
           newLimits.push_back(slimit - pstart);
         }
