@@ -12812,8 +12812,15 @@ struct RedirectSliceThroughSlice final
           newLimits.push_back(slimit - pstart);
         }
 
-        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-            sliceOp, prevSlice, newStarts, newLimits, sliceOp.getStrides());
+        auto newSliceOp = stablehlo::SliceOp::create(
+            rewriter, sliceOp.getLoc(), prevSlice, newStarts,
+            newLimits, sliceOp.getStrides());
+
+        rewriter.replaceOp(sliceOp, newSliceOp);
+
+        DominanceInfo di;
+        if (!di.dominates(prevSlice.getOperation(), newSliceOp.getOperation()))
+          rewriter.moveOpAfter(newSliceOp, prevSlice);
 
         return success();
       }
