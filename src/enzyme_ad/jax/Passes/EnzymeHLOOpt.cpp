@@ -12803,6 +12803,10 @@ struct RedirectSliceThroughSlice final
         if (!isContained)
           continue;
 
+        DominanceInfo di;
+        if (!di.dominates(prevSlice.getOperation(), sliceOp.getOperation()))
+          continue;
+
         // compute indices shift
         SmallVector<int64_t> newStarts, newLimits, newStrides;
         for (auto &&[pstart, sstart, slimit] :
@@ -12817,11 +12821,6 @@ struct RedirectSliceThroughSlice final
             newLimits, sliceOp.getStrides());
 
         rewriter.replaceOp(sliceOp, newSliceOp);
-
-        DominanceInfo di;
-        if (!di.dominates(prevSlice.getOperation(), newSliceOp.getOperation()))
-          rewriter.moveOpAfter(newSliceOp, prevSlice);
-
         return success();
       }
     }
