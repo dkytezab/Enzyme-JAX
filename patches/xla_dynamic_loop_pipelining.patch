@@ -75,8 +75,7 @@ index 0cc6e8bfa6..8c50b9f8e6 100644
 +      bool can_pipeline = false;
 +      if (loop_analysis->GetLoopIterationCount()) {
 +        can_pipeline = loop_analysis->GetLoopIterationCount()->GetUnsignedValue() > 1;
-+      } else if (config_.pipelining_direction == collective_pipeliner_utils::PipeliningDirection::kForward &&
-+                 instruction->GetModule()->config().debug_options().xla_enable_enzyme_comms_opt()) {
++      } else if (instruction->GetModule()->config().debug_options().xla_enable_enzyme_comms_opt()) {
 +        can_pipeline = true;
 +      }
 +
