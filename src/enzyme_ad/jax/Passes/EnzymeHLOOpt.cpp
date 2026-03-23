@@ -7466,7 +7466,7 @@ struct LUFactorizationTriSimplify
       LUFactorizationTriSimplify>::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(enzymexla::LUFactorizationOp op,
-                                  PatternRewriter &rewriter) const {
+                                    PatternRewriter &rewriter) const {
     auto operand = op.getOperand();
     auto resTy = cast<RankedTensorType>(op.getOutput().getType());
 
@@ -7476,8 +7476,7 @@ struct LUFactorizationTriSimplify
     if (!(canApplyUpperTriPattern(operand, rewriter)))
       return failure();
 
-    if (!op.getResult(1).use_empty() ||
-        !op.getResult(2).use_empty() ||
+    if (!op.getResult(1).use_empty() || !op.getResult(2).use_empty() ||
         !op.getResult(3).use_empty())
       return failure();
 
