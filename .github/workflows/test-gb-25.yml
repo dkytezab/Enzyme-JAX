@@ -53,6 +53,7 @@ jobs:
 
         reactant_commit:
           - 'main'
+          - 'multi_buffer'
 
     steps:
       - name: Check GPUs
