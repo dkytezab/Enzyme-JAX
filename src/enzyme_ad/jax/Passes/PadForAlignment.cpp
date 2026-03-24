@@ -4,6 +4,7 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
@@ -65,6 +66,7 @@ struct AlignmentHandler {
 
     auto placeholder = builder.create(state);
     paddedValues[v] = placeholder->getResult(0);
+    return placeholder;
   }
 
   Value getValueOrPadded(Value v) {
@@ -78,7 +80,7 @@ struct AlignmentHandler {
   Value getOrCreateSliceOp(Value paddedV, Value origV);
 
   bool handleConstantOp(stablehlo::ConstantOp op);
-  bool handleReturnOp(stablehlo::ReturnOp op);
+  bool handleReturnOp(func::ReturnOp op);
   // bool handlePadOp(stablehlo::PadOp op);
   // bool handleSliceOp(stablehlo::SliceOp op);
   // bool handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op);
@@ -226,20 +228,21 @@ bool AlignmentHandler::handleConstantOp(stablehlo::ConstantOp op) {
   return true;
 }
 
-bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
+bool AlignmentHandler::handleReturnOp(func::ReturnOp op) {
   auto parent = op->getParentOp();
   if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent))
     return false;
 
   bool anyPadded = false;
-  SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
-  for (auto &val : newOperands) {
-    if (paddedValues.contains(val)) {
-      val = paddedValues[val];
+  // SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
+
+  for (auto& operand : op.getOperandsMutable()) {
+    if (paddedValues.contains(operand.get())) {
+      operand.assign(paddedValues[operand.get()]);
       anyPadded = true;
     }
   }
-  op.getResultsMutable().assign(newOperands);
+  // op.getResultsMutable().assign(newOperands);
   return anyPadded;
 }
 
@@ -726,55 +729,65 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
 
   AlignmentHandler handler(builder, paddedValues, originalValues);
 
-  // Step 1: Initialize Original values or Pad graph boundaries with
-  // placeholders
-  DenseMap<Value, Operation *> placeholdersCreatedInStep1;
+  // llvm::errs() << "[@] === BEGIN ====" << "\n";
+  // llvm::errs() << "func: @" << func.getSymName() << "\n";
 
+  // Step 1: Initialize Original values or Pad graph boundaries with placeholders
+  DenseMap<Value, Operation *> placeholders;
   SmallVector<Operation *> ops;
-  func.walk([&](Operation *op) {
-    ops.push_back(op);
-    for (auto res : op->getResults()) {
-      if (handler.needsPadding(res)) {
-        OpBuilder::InsertionGuard guard(builder);
-        builder.setInsertionPoint(op);
-        auto placeholder = handler.createPlaceholder(res);
-        placeholdersCreatedInStep1[res] = placeholder;
-        paddedValues[res] = placeholder->getResult(0);
-      }
-    }
-  });
 
   func.walk([&](Block *block) {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(block);
-    for (auto arg : block->getArguments()) {
-      if (handler.needsPadding(arg)) {
-        auto type = cast<RankedTensorType>(arg.getType());
-        auto alignedShape = handler.getAlignedShape(type);
-        auto paddedType = type.clone(alignedShape);
 
-        Operation *replacement = nullptr;
-        if (block == func.getEntryBlock()) {
-          replacement = handler.createPlaceholder(arg);
-        } else {
-          replacement = handler.createPlaceholder(arg);
-          placeholdersCreatedInStep1[arg] = replacement;
-        }
-        paddedValues[arg] = replacement->getResult(0);
-      }
+    for (auto arg : block->getArguments()) {
+      if (!handler.needsPadding(arg))
+        continue;
+
+      auto type = cast<RankedTensorType>(arg.getType());
+      auto alignedShape = handler.getAlignedShape(type);
+
+      Operation *replacement = handler.createPlaceholder(arg);
+      placeholders[arg] = replacement;
+      // llvm::errs() << "[PadForAlignment] Creating placeholder for arg: " << arg << "\n";
+      paddedValues[arg] = replacement->getResult(0);
+    }
+  });
+
+  func.walk([&](Operation *op) {
+    if (op == func.getOperation())
+      return;
+
+    ops.push_back(op);
+
+    for (auto res : op->getResults()) {
+      if (!handler.needsPadding(res))
+        continue;
+
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPoint(op);
+      auto placeholder = handler.createPlaceholder(res);
+      placeholders[res] = placeholder;
+      paddedValues[res] = placeholder->getResult(0);
+      // llvm::errs() << "[PadForAlignment] Creating placeholder for result: " << res << "\n";
     }
   });
 
   // Step 2: Optimal Propagation Traversal
   SmallVector<Operation *> opsToErase;
-  for (auto op : ops) {
-    llvm::errs() << "[PadForAlignment] Processing Op: " << op->getName()
-                 << "\n";
-    bool handled = false;
-    if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-      handled = handler.handleConstantOp(constOp);
-    } else if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
-      handled = handler.handleReturnOp(returnOp);
+  // for (auto op : ops) {
+    // llvm::errs() << "[PadForAlignment] Processing '" << op->getName()
+    //              << "'...\n";
+
+    // bool handled = false;
+    // if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+    //   llvm::errs() << "[PadForAlignment] Handling FuncOp\n";
+    //   // handled = handler.handleFuncOp(funcOp);
+    // } else if (auto returnOp = dyn_cast<func::ReturnOp>(op)) {
+    //   llvm::errs() << "[PadForAlignment] Handling ReturnOp\n";
+    // /* handled = */handler.handleReturnOp(returnOp);
+    // } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    //   /* handled = */handler.handleConstantOp(constOp);
     // } else if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
     //   handled = handler.handlePadOp(origPad);
     // } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
@@ -794,21 +807,20 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     //   handled = handler.handleTransposeOp(transpose);
     // } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
     //   handled = handler.handleDynamicUpdateSliceOp(dus);
-    }
+    // } else { // if (!handled) { // || isa<stablehlo::ReturnOp>(op)) {
+    //   llvm::errs() << "[PadForAlignment] No specific handler for '" << op->getName() << "', applying boundary fallback\n";
 
-    // if (handled && !isa<stablehlo::ReturnOp>(op)) {
-    // } else {
     //   // Boundary fallback: slice any padded inputs
     //   for (int i = 0; i < op->getNumOperands(); ++i) {
     //     auto v = op->getOperand(i);
     //     if (handler.paddedValues.contains(v)) {
     //       builder.setInsertionPoint(op);
-    //       auto sliced = handler.getOrCreateSliceOp(handler.paddedValues[v],
-    //       v); op->setOperand(i, sliced);
+    //       auto sliced = handler.getOrCreateSliceOp(handler.paddedValues[v], v);
+    //       op->setOperand(i, sliced);
     //     }
     //   }
     // }
-  }
+  // }
 
   // Step 2.25: Recreate Regional Ops (IfOp, WhileOp)
   // for (auto op : ops) {
@@ -888,48 +900,52 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   //   }
   // }
 
-  // // Step 2.5: Resolve Placeholders Created in Step 1
-  // for (auto pair : placeholdersCreatedInStep1) {
-  //   Value orig = pair.first;
-  //   Operation *ph = pair.second;
-  //   Value phRes = ph->getResult(0);
+  // Step 2.5: Resolve Placeholders Created in Step 1
+  for (auto pair : placeholders) {
+    // llvm::errs() << "[PadForAlignment] Resolving placeholder for value: " << pair.first << "\n";
+    Value orig = pair.first;
+    Operation *ph = pair.second;
+    Value phRes = ph->getResult(0);
 
-  //   if (handler.paddedValues[orig] == phRes) {
-  //     handler.paddedValues.erase(orig); // clear cache lookup
-  //     builder.setInsertionPoint(ph);
-  //     auto realPad = handler.getOrCreatePadOp(orig);
-  //     phRes.replaceAllUsesWith(realPad);
-  //     opsToErase.push_back(ph);
-  //   } else {
-  //     phRes.replaceAllUsesWith(handler.paddedValues[orig]);
-  //     opsToErase.push_back(ph);
-  //   }
-  // }
+    if (handler.paddedValues[orig] == phRes) {
+      handler.paddedValues.erase(orig); // clear cache lookup
+      builder.setInsertionPoint(ph);
+      auto realPad = handler.getOrCreatePadOp(orig);
+      phRes.replaceAllUsesWith(realPad);
+      opsToErase.push_back(ph);
+    } else {
+      phRes.replaceAllUsesWith(handler.paddedValues[orig]);
+      opsToErase.push_back(ph);
+    }
+  }
 
-  // // Step 3: Replace uses for values that have been padded
-  // for (auto pair : paddedValues) {
-  //   Value orig = pair.first;
-  //   Value padded = pair.second;
-  //   if (orig.use_empty())
-  //     continue;
+  // Step 3: Replace uses for values that have been padded
+  for (auto pair : paddedValues) {
+    Value orig = pair.first;
+    Value padded = pair.second;
+    if (orig.use_empty())
+      continue;
 
-  //   auto origType = cast<RankedTensorType>(orig.getType());
-  //   auto paddedType = cast<RankedTensorType>(padded.getType());
-  //   if (origType == paddedType)
-  //     continue;
+    auto origType = cast<RankedTensorType>(orig.getType());
+    auto paddedType = cast<RankedTensorType>(padded.getType());
+    if (origType == paddedType)
+      continue;
 
-  //   builder.setInsertionPointAfterValue(padded);
-  //   auto sliced = handler.getOrCreateSliceOp(padded, orig);
+    builder.setInsertionPointAfterValue(padded);
+    /*auto sliced = */handler.getOrCreateSliceOp(padded, orig);
 
-  //   orig.replaceAllUsesWith(sliced);
-  // }
+    // TODO this has dominance issues
+    // orig.replaceAllUsesWith(sliced);
+  }
 
   // Safely delete all placeholders
-  /*
-      for (auto ph : placeholders) {
-        ph->erase();
-      }
-  */
+  for (auto [_, ph] : placeholders) {
+    ph->erase();
+  }
+
+  // llvm::errs() << "[@] === BEGIN DUMP ===\n";
+  // func.dump();
+  // llvm::errs() << "[@] === END DUMP ===\n";
 }
 
 } // namespace enzyme
