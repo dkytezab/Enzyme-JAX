@@ -80,7 +80,6 @@ struct AlignmentHandler {
   Value getOrCreateSliceOp(Value paddedV, Value origV);
 
   bool handleConstantOp(stablehlo::ConstantOp op);
-  bool handleReturnOp(func::ReturnOp op);
   bool handlePadOp(stablehlo::PadOp op);
   bool handleSliceOp(stablehlo::SliceOp op);
   bool handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op);
@@ -226,22 +225,6 @@ bool AlignmentHandler::handleConstantOp(stablehlo::ConstantOp op) {
     eraseWithReplacement(op, padOp.getResult());
   }
   return true;
-}
-
-bool AlignmentHandler::handleReturnOp(func::ReturnOp op) {
-  auto parent = op->getParentOp();
-  if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent))
-    return false;
-
-  bool anyPadded = false;
-
-  for (auto& operand : op.getOperandsMutable()) {
-    if (paddedValues.contains(operand.get())) {
-      operand.assign(paddedValues[operand.get()]);
-      anyPadded = true;
-    }
-  }
-  return anyPadded;
 }
 
 bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
@@ -783,9 +766,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
       // llvm::errs() << "[PadForAlignment] Handling FuncOp\n";
     //   // handled = handler.handleFuncOp(funcOp);
-    } else if (auto returnOp = dyn_cast<func::ReturnOp>(op)) {
-    //   llvm::errs() << "[PadForAlignment] Handling ReturnOp\n";
-    // /* handled = */handler.handleReturnOp(returnOp);
     } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
       /* handled = */handler.handleConstantOp(constOp);
     // } else if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
@@ -807,18 +787,15 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       /* handled = */handler.handleTransposeOp(transpose);
     // } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
     //   /* handled = */handler.handleDynamicUpdateSliceOp(dus);
-    // } else { // if (!handled) { // || isa<stablehlo::ReturnOp>(op)) {
-    //   llvm::errs() << "[PadForAlignment] No specific handler for '" << op->getName() << "', applying boundary fallback\n";
-
-    //   // Boundary fallback: slice any padded inputs
-    //   for (int i = 0; i < op->getNumOperands(); ++i) {
-    //     auto v = op->getOperand(i);
-    //     if (handler.paddedValues.contains(v)) {
-    //       builder.setInsertionPoint(op);
-    //       auto sliced = handler.getOrCreateSliceOp(handler.paddedValues[v], v);
-    //       op->setOperand(i, sliced);
-    //     }
-    //   }
+    } else {
+      // Boundary fallback: slice any padded inputs
+      for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+        if (paddedValues.contains(operand)) {
+          builder.setInsertionPoint(op);
+          auto slice = handler.getOrCreateSliceOp(paddedValues[operand], operand);
+          op->setOperand(i, slice);
+        }
+      }
     }
   }
 
@@ -920,9 +897,7 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   }
 
   // Step 3: Replace uses for values that have been padded
-  for (auto pair : paddedValues) {
-    Value orig = pair.first;
-    Value padded = pair.second;
+  for (auto [orig, padded] : paddedValues) {
     if (orig.use_empty())
       continue;
 
@@ -931,8 +906,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     if (origType == paddedType)
       continue;
 
-    builder.setInsertionPointAfterValue(padded);
-    /*auto sliced = */handler.getOrCreateSliceOp(padded, orig);
+    // builder.setInsertionPointAfterValue(padded);
+    // /* auto sliced = */handler.getOrCreateSliceOp(padded, orig);
 
     // TODO this has dominance issues
     // orig.replaceAllUsesWith(sliced);
