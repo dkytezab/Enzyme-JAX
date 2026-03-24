@@ -627,7 +627,8 @@ bool AlignmentHandler::handleTransposeOp(stablehlo::TransposeOp op) {
 
   auto newOp = builder.create<stablehlo::TransposeOp>(
       op.getLoc(), paddedResType, paddedInput, perm);
-  replaceUsesOfValueWith(res, newOp->getResults());
+  
+  res.replaceAllUsesWith(newOp->getResult(0));
   return true;
 }
 
@@ -802,8 +803,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     //   /* handled = */handler.handleDotGeneralOp(dot);
     // } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
     //   /* handled = */handler.handleBroadcastInDimOp(bcast);
-    // } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
-    //   /* handled = */handler.handleTransposeOp(transpose);
+    } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+      /* handled = */handler.handleTransposeOp(transpose);
     // } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
     //   /* handled = */handler.handleDynamicUpdateSliceOp(dus);
     // } else { // if (!handled) { // || isa<stablehlo::ReturnOp>(op)) {
