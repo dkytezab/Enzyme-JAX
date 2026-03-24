@@ -22,7 +22,7 @@ struct AlignmentHandler {
                    DenseMap<Value, Value> &ov)
       : builder(b), paddedValues(pv), originalValues(ov) {}
 
-  bool needsPadding(Value v) {
+  static bool needsPadding(Value v) {
     auto type = dyn_cast<RankedTensorType>(v.getType());
     if (!type)
       return false;
@@ -33,7 +33,7 @@ struct AlignmentHandler {
     return false;
   }
 
-  SmallVector<int64_t> getAlignedShape(RankedTensorType type) {
+  static SmallVector<int64_t> getAlignedShape(RankedTensorType type) {
     auto shape = llvm::to_vector(type.getShape());
     auto padding = getPaddingAmounts(type);
     for (unsigned i = 0; i < shape.size(); ++i) {
@@ -42,7 +42,7 @@ struct AlignmentHandler {
     return shape;
   }
 
-  SmallVector<int64_t> getPaddingAmounts(RankedTensorType type) {
+  static SmallVector<int64_t> getPaddingAmounts(RankedTensorType type) {
     SmallVector<int64_t> padding(type.getRank(), 0);
     auto rank = type.getRank();
     for (int i = std::max((int64_t)0, rank - 2); i < rank; ++i) {
@@ -708,7 +708,7 @@ bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
 
 Operation *createPlaceholder(Value v, OpBuilder &builder) {
   auto type = cast<RankedTensorType>(v.getType());
-  auto alignedShape = handler.getAlignedShape(type);
+  auto alignedShape = AlignmentHandler::getAlignedShape(type);
   auto paddedType = type.clone(alignedShape);
 
   OperationState state(v.getLoc(), "enzyme_temporary_placeholder");
