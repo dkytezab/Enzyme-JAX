@@ -213,6 +213,23 @@ bool AlignmentHandler::handleConstantOp(stablehlo::ConstantOp op) {
   return true;
 }
 
+bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
+  auto parent = op->getParentOp();
+  if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent))
+    return false;
+
+  bool anyPadded = false;
+  SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
+  for (auto &val : newOperands) {
+    if (paddedValues.contains(val)) {
+      val = paddedValues[val];
+      anyPadded = true;
+    }
+  }
+  op.getResultsMutable().assign(newOperands);
+  return anyPadded;
+}
+
 bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
   auto input = op.getOperand();
   auto res = op.getResult();
@@ -689,23 +706,6 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
   return true;
 }
 
-bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
-  auto parent = op->getParentOp();
-  if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent))
-    return false;
-
-  bool anyPadded = false;
-  SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
-  for (auto &val : newOperands) {
-    if (paddedValues.contains(val)) {
-      val = paddedValues[val];
-      anyPadded = true;
-    }
-  }
-  op.getResultsMutable().assign(newOperands);
-  return anyPadded;
-}
-
 Operation *createPlaceholder(Value v, OpBuilder &builder) {
   auto type = cast<RankedTensorType>(v.getType());
   auto alignedShape = AlignmentHandler::getAlignedShape(type);
@@ -771,10 +771,10 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     llvm::errs() << "[PadForAlignment] Processing Op: " << op->getName()
                  << "\n";
     bool handled = false;
-    if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
-      handled = handler.handleReturnOp(returnOp);
-    } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
       handled = handler.handleConstantOp(constOp);
+    } else if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
+      handled = handler.handleReturnOp(returnOp);
     } else if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
       handled = handler.handlePadOp(origPad);
     } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
