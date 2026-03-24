@@ -54,6 +54,19 @@ struct AlignmentHandler {
     return padding;
   }
 
+  Operation *createPlaceholder(Value v) {
+    auto type = cast<RankedTensorType>(v.getType());
+    auto alignedShape = AlignmentHandler::getAlignedShape(type);
+    auto paddedType = type.clone(alignedShape);
+
+    OperationState state(v.getLoc(), "enzyme_temporary_placeholder");
+    state.addOperands({v});
+    state.addTypes({paddedType});
+
+    auto placeholder = builder.create(state);
+    paddedValues[v] = placeholder->getResult(0);
+  }
+
   Value getValueOrPadded(Value v) {
     auto it = paddedValues.find(v);
     if (it != paddedValues.end())
@@ -706,19 +719,6 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
   return true;
 }
 
-Operation *createPlaceholder(Value v, OpBuilder &builder) {
-  auto type = cast<RankedTensorType>(v.getType());
-  auto alignedShape = AlignmentHandler::getAlignedShape(type);
-  auto paddedType = type.clone(alignedShape);
-
-  OperationState state(v.getLoc(), "enzyme_temporary_placeholder");
-  state.addOperands({v});
-  state.addTypes({paddedType});
-
-  auto placeholder = builder.create(state);
-  paddedValues[v] = placeholder->getResult(0);
-}
-
 void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   OpBuilder builder(func.getContext());
   DenseMap<Value, Value> paddedValues;
@@ -737,7 +737,7 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       if (handler.needsPadding(res)) {
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPoint(op);
-        auto placeholder = createPlaceholder(res, builder);
+        auto placeholder = handler.createPlaceholder(res);
         placeholdersCreatedInStep1[res] = placeholder;
         paddedValues[res] = placeholder->getResult(0);
       }
@@ -755,9 +755,9 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
 
         Operation *replacement = nullptr;
         if (block == func.getEntryBlock()) {
-          replacement = createPlaceholder(arg, builder);
+          replacement = handle.createPlaceholder(arg);
         } else {
-          replacement = createPlaceholder(arg, builder);
+          replacement = handle.createPlaceholder(arg);
           placeholdersCreatedInStep1[arg] = replacement;
         }
         paddedValues[arg] = replacement->getResult(0);
