@@ -234,7 +234,6 @@ bool AlignmentHandler::handleReturnOp(func::ReturnOp op) {
     return false;
 
   bool anyPadded = false;
-  // SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
 
   for (auto& operand : op.getOperandsMutable()) {
     if (paddedValues.contains(operand.get())) {
@@ -242,7 +241,6 @@ bool AlignmentHandler::handleReturnOp(func::ReturnOp op) {
       anyPadded = true;
     }
   }
-  // op.getResultsMutable().assign(newOperands);
   return anyPadded;
 }
 
@@ -775,19 +773,19 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
 
   // Step 2: Optimal Propagation Traversal
   SmallVector<Operation *> opsToErase;
-  // for (auto op : ops) {
+  for (auto op : ops) {
     // llvm::errs() << "[PadForAlignment] Processing '" << op->getName()
     //              << "'...\n";
 
     // bool handled = false;
-    // if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
-    //   llvm::errs() << "[PadForAlignment] Handling FuncOp\n";
+    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      // llvm::errs() << "[PadForAlignment] Handling FuncOp\n";
     //   // handled = handler.handleFuncOp(funcOp);
-    // } else if (auto returnOp = dyn_cast<func::ReturnOp>(op)) {
+    } else if (auto returnOp = dyn_cast<func::ReturnOp>(op)) {
     //   llvm::errs() << "[PadForAlignment] Handling ReturnOp\n";
     // /* handled = */handler.handleReturnOp(returnOp);
-    // } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-    //   /* handled = */handler.handleConstantOp(constOp);
+    } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+      /* handled = */handler.handleConstantOp(constOp);
     // } else if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
     //   handled = handler.handlePadOp(origPad);
     // } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
@@ -819,8 +817,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     //       op->setOperand(i, sliced);
     //     }
     //   }
-    // }
-  // }
+    }
+  }
 
   // Step 2.25: Recreate Regional Ops (IfOp, WhileOp)
   // for (auto op : ops) {
