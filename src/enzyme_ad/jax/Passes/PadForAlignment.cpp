@@ -1,13 +1,13 @@
-#include "mlir/Pass/Pass.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Debug.h"
-#include "src/enzyme_ad/jax/Utils.h"
 
 namespace mlir {
 namespace enzyme {
@@ -16,16 +16,19 @@ struct AlignmentHandler {
   OpBuilder &builder;
   DenseMap<Value, Value> &paddedValues;
   DenseMap<Value, Value> &originalValues;
-  SmallVector<Operation*> toErase;
+  SmallVector<Operation *> toErase;
 
-  AlignmentHandler(OpBuilder &b, DenseMap<Value, Value> &pv, DenseMap<Value, Value> &ov)
+  AlignmentHandler(OpBuilder &b, DenseMap<Value, Value> &pv,
+                   DenseMap<Value, Value> &ov)
       : builder(b), paddedValues(pv), originalValues(ov) {}
 
   bool needsPadding(Value v) {
     auto type = dyn_cast<RankedTensorType>(v.getType());
-    if (!type) return false;
+    if (!type)
+      return false;
     for (auto p : getPaddingAmounts(type)) {
-      if (p > 0) return true;
+      if (p > 0)
+        return true;
     }
     return false;
   }
@@ -44,7 +47,8 @@ struct AlignmentHandler {
     auto rank = type.getRank();
     for (int i = std::max((int64_t)0, rank - 2); i < rank; ++i) {
       if (type.getDimSize(i) >= 64 && type.getDimSize(i) % 128 != 0) {
-        padding[i] = ((type.getDimSize(i) + 127) / 128 * 128) - type.getDimSize(i);
+        padding[i] =
+            ((type.getDimSize(i) + 127) / 128 * 128) - type.getDimSize(i);
       }
     }
     return padding;
@@ -52,7 +56,8 @@ struct AlignmentHandler {
 
   Value getValueOrPadded(Value v) {
     auto it = paddedValues.find(v);
-    if (it != paddedValues.end()) return it->second;
+    if (it != paddedValues.end())
+      return it->second;
     return v;
   }
 
@@ -71,8 +76,9 @@ struct AlignmentHandler {
   bool handleTransposeOp(stablehlo::TransposeOp op);
   bool handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceOp op);
 
-  void eraseWithReplacement(Operation *op, ValueRange replacements, bool should_erase = true) {
-    for (auto [res, rep]  : llvm::zip_equal(op->getResults(), replacements)){
+  void eraseWithReplacement(Operation *op, ValueRange replacements,
+                            bool should_erase = true) {
+    for (auto [res, rep] : llvm::zip_equal(op->getResults(), replacements)) {
       auto found = paddedValues.find(res);
       assert(found != paddedValues.end());
       paddedValues.erase(found);
@@ -87,20 +93,22 @@ struct AlignmentHandler {
 #define GEN_PASS_DEF_PADFORALIGNMENTPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
-class PadForAlignmentPass : public impl::PadForAlignmentPassBase<PadForAlignmentPass> {
+class PadForAlignmentPass
+    : public impl::PadForAlignmentPassBase<PadForAlignmentPass> {
 public:
-  using impl::PadForAlignmentPassBase<PadForAlignmentPass>::PadForAlignmentPassBase;
+  using impl::PadForAlignmentPassBase<
+      PadForAlignmentPass>::PadForAlignmentPassBase;
 
   void runOnFunction(func::FuncOp func);
 
   void runOnOperation() override {
     auto op = getOperation();
     if (auto func = dyn_cast<func::FuncOp>(op)) {
-       runOnFunction(func);
+      runOnFunction(func);
     } else if (auto mod = dyn_cast<ModuleOp>(op)) {
-       for (auto f : mod.getOps<func::FuncOp>()) {
-          runOnFunction(f);
-       }
+      for (auto f : mod.getOps<func::FuncOp>()) {
+        runOnFunction(f);
+      }
     }
   }
 };
@@ -110,30 +118,35 @@ public:
 //===----------------------------------------------------------------------===//
 
 Value AlignmentHandler::getOrCreateSliceOp(Value paddedV, Value origV) {
-  if (originalValues.contains(paddedV)) return originalValues[paddedV];
+  if (originalValues.contains(paddedV))
+    return originalValues[paddedV];
   auto origType = cast<RankedTensorType>(origV.getType());
   auto paddedType = cast<RankedTensorType>(paddedV.getType());
 
-  if (origType == paddedType) return paddedV;
+  if (origType == paddedType)
+    return paddedV;
 
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointAfterValue(paddedV);
 
   SmallVector<int64_t> start(origType.getRank(), 0);
-  SmallVector<int64_t> limit(origType.getShape().begin(), origType.getShape().end());
+  SmallVector<int64_t> limit(origType.getShape().begin(),
+                             origType.getShape().end());
   SmallVector<int64_t> strides(origType.getRank(), 1);
 
-  auto sliceOp = stablehlo::SliceOp::create(
-      builder, paddedV.getLoc(), origType, paddedV, start, limit, strides);
+  auto sliceOp = stablehlo::SliceOp::create(builder, paddedV.getLoc(), origType,
+                                            paddedV, start, limit, strides);
   originalValues[paddedV] = sliceOp.getResult();
   return sliceOp.getResult();
 }
 
 Value AlignmentHandler::getOrCreatePadOp(Value v) {
-  if (paddedValues.contains(v)) return paddedValues[v];
+  if (paddedValues.contains(v))
+    return paddedValues[v];
 
   auto type = dyn_cast<RankedTensorType>(v.getType());
-  if (!type) return v;
+  if (!type)
+    return v;
 
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointAfterValue(v);
@@ -141,9 +154,9 @@ Value AlignmentHandler::getOrCreatePadOp(Value v) {
   auto alignedShape = getAlignedShape(type);
 
   auto elementOp = builder.create<stablehlo::ConstantOp>(
-      v.getLoc(), DenseElementsAttr::get(
-                      RankedTensorType::get({}, type.getElementType()),
-                      builder.getZeroAttr(type.getElementType())));
+      v.getLoc(),
+      DenseElementsAttr::get(RankedTensorType::get({}, type.getElementType()),
+                             builder.getZeroAttr(type.getElementType())));
 
   SmallVector<int64_t> edgePaddingLow(type.getRank(), 0);
   SmallVector<int64_t> edgePaddingHigh(type.getRank(), 0);
@@ -151,22 +164,23 @@ Value AlignmentHandler::getOrCreatePadOp(Value v) {
 
   auto rank = type.getRank();
   for (int i = std::max((int64_t)0, rank - 2); i < rank; ++i) {
-     if (type.getDimSize(i) >= 64 && type.getDimSize(i) % 128 != 0) {
-          edgePaddingHigh[i] = alignedShape[i] - type.getDimSize(i);
-     }
+    if (type.getDimSize(i) >= 64 && type.getDimSize(i) % 128 != 0) {
+      edgePaddingHigh[i] = alignedShape[i] - type.getDimSize(i);
+    }
   }
 
   auto paddedType = type.clone(alignedShape);
-  auto padOp = stablehlo::PadOp::create(
-      builder, v.getLoc(), paddedType, v, elementOp.getResult(),
-      edgePaddingLow, edgePaddingHigh, interiorPadding);
+  auto padOp = stablehlo::PadOp::create(builder, v.getLoc(), paddedType, v,
+                                        elementOp.getResult(), edgePaddingLow,
+                                        edgePaddingHigh, interiorPadding);
   paddedValues[v] = padOp.getResult();
   return padOp.getResult();
 }
 
 bool AlignmentHandler::handleConstantOp(stablehlo::ConstantOp op) {
   auto res = op.getResult();
-  if (!needsPadding(res)) return false;
+  if (!needsPadding(res))
+    return false;
 
   builder.setInsertionPoint(op);
   auto type = cast<RankedTensorType>(res.getType());
@@ -181,19 +195,19 @@ bool AlignmentHandler::handleConstantOp(stablehlo::ConstantOp op) {
     eraseWithReplacement(op, newOp.getResult());
   } else {
     auto padZero = builder.create<stablehlo::ConstantOp>(
-        op.getLoc(), DenseElementsAttr::get(
-                        RankedTensorType::get({}, type.getElementType()),
-                        builder.getZeroAttr(type.getElementType())));
+        op.getLoc(),
+        DenseElementsAttr::get(RankedTensorType::get({}, type.getElementType()),
+                               builder.getZeroAttr(type.getElementType())));
     auto padding = getPaddingAmounts(type);
     SmallVector<int64_t> low(type.getRank(), 0);
     SmallVector<int64_t> high(type.getRank(), 0);
     SmallVector<int64_t> interior(type.getRank(), 0);
     for (int i = 0; i < type.getRank(); ++i) {
-         high[i] = padding[i];
+      high[i] = padding[i];
     }
-    auto padOp = stablehlo::PadOp::create(
-        builder, op.getLoc(), paddedType, res, padZero.getResult(),
-        low, high, interior);
+    auto padOp =
+        stablehlo::PadOp::create(builder, op.getLoc(), paddedType, res,
+                                 padZero.getResult(), low, high, interior);
     eraseWithReplacement(op, padOp.getResult());
   }
   return true;
@@ -203,7 +217,8 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
   auto input = op.getOperand();
   auto res = op.getResult();
 
-  if (!needsPadding(res) && !needsPadding(input)) return false;
+  if (!needsPadding(res) && !needsPadding(input))
+    return false;
 
   builder.setInsertionPoint(op);
   Value paddedInput = getValueOrPadded(input);
@@ -213,11 +228,13 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
   SmallVector<int64_t> interior = llvm::to_vector(op.getInteriorPadding());
   bool all_zero_interior = true;
   for (int i = 0; i < type.getRank(); ++i) {
-    if (interior[i] != 0) all_zero_interior = false;
+    if (interior[i] != 0)
+      all_zero_interior = false;
   }
   bool all_zero_low = true;
   for (int i = 0; i < type.getRank(); ++i) {
-    if (low[i] != 0) all_zero_low = false;
+    if (low[i] != 0)
+      all_zero_low = false;
   }
 
   auto type = cast<RankedTensorType>(op.getType());
@@ -231,16 +248,16 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
       for (int i = 0; i < type.getRank(); ++i) {
         high[i] += resultPadding[i];
       }
-      auto padOp = stablehlo::PadOp::create(
-          builder, op.getLoc(), paddedType, paddedInput, op.getPaddingValue(),
-          low, high, interior);
+      auto padOp = stablehlo::PadOp::create(builder, op.getLoc(), paddedType,
+                                            paddedInput, op.getPaddingValue(),
+                                            low, high, interior);
       eraseWithReplacement(op, padOp.getResult());
       return true;
-    } else {      
+    } else {
       builder.setInsertionPointAfterValue(op);
-      auto pad2Op = stablehlo::PadOp::create(
-          builder, op.getLoc(), paddedType, paddedInput, op.getPaddingValue(),
-          low, high, interior);
+      auto pad2Op = stablehlo::PadOp::create(builder, op.getLoc(), paddedType,
+                                             paddedInput, op.getPaddingValue(),
+                                             low, high, interior);
       eraseWithReplacement(op, padOp.getResult(), false);
       return true;
     }
@@ -250,15 +267,16 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
     bool all_zero_input_padding = true;
     for (int i = 0; i < type.getRank(); ++i) {
       high[i] += resultPadding[i] - inputPadding[i];
-      if (high[i] != 0) all_zero_input_padding = false;
+      if (high[i] != 0)
+        all_zero_input_padding = false;
     }
     if (all_zero_input_padding) {
       eraseWithReplacement(op, paddedInput);
       return true;
     }
-    auto padOp = stablehlo::PadOp::create(
-        builder, op.getLoc(), paddedType, paddedInput, op.getPaddingValue(),
-        low, high, interior);
+    auto padOp =
+        stablehlo::PadOp::create(builder, op.getLoc(), paddedType, paddedInput,
+                                 op.getPaddingValue(), low, high, interior);
     eraseWithReplacement(op, padOp.getResult());
     return true;
   }
@@ -270,7 +288,8 @@ bool AlignmentHandler::handleSliceOp(stablehlo::SliceOp op) {
   auto input = op.getOperand();
   auto res = op.getResult();
 
-  if (!needsPadding(res) && !needsPadding(input)) return false;
+  if (!needsPadding(res) && !needsPadding(input))
+    return false;
 
   builder.setInsertionPoint(op);
   Value paddedInput = getValueOrPadded(input);
@@ -292,48 +311,50 @@ bool AlignmentHandler::handleSliceOp(stablehlo::SliceOp op) {
   auto padding = getPaddingAmounts(outType);
   for (int i = 0; i < rank; ++i) {
     if (padding[i] > 0) {
-       long targetLimit = start[i] + alignedOutShape[i];
-       if (targetLimit <= inputType.getDimSize(i)) {
-          newLimit[i] = targetLimit;
-       } else {
-          newLimit[i] = inputType.getDimSize(i);
-          needsPadAfter = true;
-       }
+      long targetLimit = start[i] + alignedOutShape[i];
+      if (targetLimit <= inputType.getDimSize(i)) {
+        newLimit[i] = targetLimit;
+      } else {
+        newLimit[i] = inputType.getDimSize(i);
+        needsPadAfter = true;
+      }
     }
   }
 
   SmallVector<int64_t> intermediateShape = llvm::to_vector(outType.getShape());
   for (int i = 0; i < rank; ++i) {
-     intermediateShape[i] = (newLimit[i] - start[i] + strides[i] - 1) / strides[i];
+    intermediateShape[i] =
+        (newLimit[i] - start[i] + strides[i] - 1) / strides[i];
   }
   auto intermediateType = outType.clone(intermediateShape);
 
-  auto sliceOp = stablehlo::SliceOp::create(
-      builder, op.getLoc(), intermediateType, paddedInput, start, newLimit, strides);
-  
+  auto sliceOp =
+      stablehlo::SliceOp::create(builder, op.getLoc(), intermediateType,
+                                 paddedInput, start, newLimit, strides);
+
   Value sliceRes = sliceOp.getResult();
   auto paddedOutType = outType.clone(alignedOutShape);
 
   if (needsPadAfter) {
-      auto padZero = builder.create<stablehlo::ConstantOp>(
-          op.getLoc(), DenseElementsAttr::get(
-                          RankedTensorType::get({}, outType.getElementType()),
-                          builder.getZeroAttr(outType.getElementType())));
+    auto padZero = builder.create<stablehlo::ConstantOp>(
+        op.getLoc(), DenseElementsAttr::get(
+                         RankedTensorType::get({}, outType.getElementType()),
+                         builder.getZeroAttr(outType.getElementType())));
 
-      SmallVector<int64_t> edgePaddingLow(rank, 0);
-      SmallVector<int64_t> edgePaddingHigh(rank, 0);
-      SmallVector<int64_t> interiorPadding(rank, 0);
+    SmallVector<int64_t> edgePaddingLow(rank, 0);
+    SmallVector<int64_t> edgePaddingHigh(rank, 0);
+    SmallVector<int64_t> interiorPadding(rank, 0);
 
-      for (int i = std::max((int64_t)0, rank - 2); i < rank; ++i) {
-         edgePaddingHigh[i] = alignedOutShape[i] - intermediateShape[i];
-      }
+    for (int i = std::max((int64_t)0, rank - 2); i < rank; ++i) {
+      edgePaddingHigh[i] = alignedOutShape[i] - intermediateShape[i];
+    }
 
-      auto padOp = stablehlo::PadOp::create(
-          builder, op.getLoc(), paddedOutType, sliceRes, padZero.getResult(),
-          edgePaddingLow, edgePaddingHigh, interiorPadding);
-      paddedValues[res] = padOp.getResult();
+    auto padOp = stablehlo::PadOp::create(
+        builder, op.getLoc(), paddedOutType, sliceRes, padZero.getResult(),
+        edgePaddingLow, edgePaddingHigh, interiorPadding);
+    paddedValues[res] = padOp.getResult();
   } else {
-      paddedValues[res] = sliceRes;
+    paddedValues[res] = sliceRes;
   }
   return true;
 }
@@ -342,7 +363,8 @@ bool AlignmentHandler::handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op) {
   auto input = op.getOperand();
   auto res = op.getResult();
 
-  if (!paddedValues.contains(input) && !needsPadding(res)) return false;
+  if (!paddedValues.contains(input) && !needsPadding(res))
+    return false;
 
   builder.setInsertionPoint(op);
   auto paddedInput = getOrCreatePadOp(input);
@@ -363,53 +385,54 @@ bool AlignmentHandler::handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op) {
     int64_t outDim = bcastDims[i];
     auto inputDimSize = inputPaddedType.getDimSize(i);
     if (inputDimSize != alignedOutShape[outDim]) {
-       intermediateShape[outDim] = inputDimSize;
-       if (inputDimSize < alignedOutShape[outDim]) {
-          padHigh[outDim] = alignedOutShape[outDim] - inputDimSize;
-          needsPadAfter = true;
-       } else {
-          sliceLimit[outDim] = alignedOutShape[outDim];
-          needsSliceAfter = true;
-       }
+      intermediateShape[outDim] = inputDimSize;
+      if (inputDimSize < alignedOutShape[outDim]) {
+        padHigh[outDim] = alignedOutShape[outDim] - inputDimSize;
+        needsPadAfter = true;
+      } else {
+        sliceLimit[outDim] = alignedOutShape[outDim];
+        needsSliceAfter = true;
+      }
     }
   }
 
   auto intermediateType = outType.clone(intermediateShape);
   auto newOp = builder.create<stablehlo::BroadcastInDimOp>(
       op.getLoc(), intermediateType, paddedInput, bcastDims);
-  
+
   Value currentOut = newOp.getResult();
 
   if (needsSliceAfter) {
-      SmallVector<int64_t> start(outType.getRank(), 0);
-      SmallVector<int64_t> strides(outType.getRank(), 1);
-      
-      SmallVector<int64_t> sliceShape = intermediateShape;
-      for (int i = 0; i < outType.getRank(); ++i) {
-         sliceShape[i] = sliceLimit[i];
-      }
-      auto sliceType = outType.clone(sliceShape);
-      
-      auto sliceOp = stablehlo::SliceOp::create(
-          builder, op.getLoc(), sliceType, currentOut, start, sliceLimit, strides);
-      currentOut = sliceOp.getResult();
+    SmallVector<int64_t> start(outType.getRank(), 0);
+    SmallVector<int64_t> strides(outType.getRank(), 1);
+
+    SmallVector<int64_t> sliceShape = intermediateShape;
+    for (int i = 0; i < outType.getRank(); ++i) {
+      sliceShape[i] = sliceLimit[i];
+    }
+    auto sliceType = outType.clone(sliceShape);
+
+    auto sliceOp =
+        stablehlo::SliceOp::create(builder, op.getLoc(), sliceType, currentOut,
+                                   start, sliceLimit, strides);
+    currentOut = sliceOp.getResult();
   }
 
   if (needsPadAfter) {
-      auto padZero = builder.create<stablehlo::ConstantOp>(
-          op.getLoc(), DenseElementsAttr::get(
-                          RankedTensorType::get({}, outType.getElementType()),
-                          builder.getZeroAttr(outType.getElementType())));
+    auto padZero = builder.create<stablehlo::ConstantOp>(
+        op.getLoc(), DenseElementsAttr::get(
+                         RankedTensorType::get({}, outType.getElementType()),
+                         builder.getZeroAttr(outType.getElementType())));
 
-      SmallVector<int64_t> edgePaddingLow(outType.getRank(), 0);
-      SmallVector<int64_t> edgePaddingHigh = padHigh;
-      SmallVector<int64_t> interiorPadding(outType.getRank(), 0);
+    SmallVector<int64_t> edgePaddingLow(outType.getRank(), 0);
+    SmallVector<int64_t> edgePaddingHigh = padHigh;
+    SmallVector<int64_t> interiorPadding(outType.getRank(), 0);
 
-      auto paddedType = outType.clone(alignedOutShape);
-      auto padOp = stablehlo::PadOp::create(
-          builder, op.getLoc(), paddedType, currentOut, padZero.getResult(),
-          edgePaddingLow, edgePaddingHigh, interiorPadding);
-      currentOut = padOp.getResult();
+    auto paddedType = outType.clone(alignedOutShape);
+    auto padOp = stablehlo::PadOp::create(
+        builder, op.getLoc(), paddedType, currentOut, padZero.getResult(),
+        edgePaddingLow, edgePaddingHigh, interiorPadding);
+    currentOut = padOp.getResult();
   }
 
   paddedValues[res] = currentOut;
@@ -422,16 +445,19 @@ bool AlignmentHandler::handleSelectOp(stablehlo::SelectOp op) {
   auto falseVal = op.getOnFalse();
   auto res = op.getResult();
 
-  bool anyPadded = paddedValues.contains(cond) || paddedValues.contains(trueVal) || paddedValues.contains(falseVal);
-  if (!anyPadded) return false;
+  bool anyPadded = paddedValues.contains(cond) ||
+                   paddedValues.contains(trueVal) ||
+                   paddedValues.contains(falseVal);
+  if (!anyPadded)
+    return false;
 
   builder.setInsertionPoint(op);
-  
+
   Value paddedCond = cond;
   if (cast<RankedTensorType>(cond.getType()).getRank() > 0) {
-      paddedCond = getOrCreatePadOp(cond); 
+    paddedCond = getOrCreatePadOp(cond);
   }
-  
+
   auto paddedTrue = getOrCreatePadOp(trueVal);
   auto paddedFalse = getOrCreatePadOp(falseVal);
 
@@ -452,56 +478,61 @@ bool AlignmentHandler::handleConcatenateOp(stablehlo::ConcatenateOp op) {
 
   bool anyPadded = false;
   for (auto v : op.getInputs()) {
-      if (paddedValues.contains(v)) anyPadded = true;
+    if (paddedValues.contains(v))
+      anyPadded = true;
   }
-  if (!anyPadded) return false;
+  if (!anyPadded)
+    return false;
 
   builder.setInsertionPoint(op);
   SmallVector<Value> operands;
 
   for (auto v : op.getInputs()) {
-      if (!paddedValues.contains(v)) {
-          operands.push_back(getOrCreatePadOp(v)); 
+    if (!paddedValues.contains(v)) {
+      operands.push_back(getOrCreatePadOp(v));
+    } else {
+      auto paddedV = paddedValues[v];
+      auto unpaddedType = cast<RankedTensorType>(v.getType());
+      auto paddedType = cast<RankedTensorType>(paddedV.getType());
+
+      if (paddedType.getDimSize(axis) > unpaddedType.getDimSize(axis)) {
+        SmallVector<int64_t> start(unpaddedType.getRank(), 0);
+        SmallVector<int64_t> limit(paddedType.getShape().begin(),
+                                   paddedType.getShape().end());
+        limit[axis] = unpaddedType.getDimSize(axis);
+        SmallVector<int64_t> strides(unpaddedType.getRank(), 1);
+
+        auto sliceType = paddedType.clone(limit);
+        auto sliceOp = builder.create<stablehlo::SliceOp>(
+            op.getLoc(), sliceType, paddedV, start, limit, strides);
+        operands.push_back(sliceOp.getResult());
       } else {
-          auto paddedV = paddedValues[v];
-          auto unpaddedType = cast<RankedTensorType>(v.getType());
-          auto paddedType = cast<RankedTensorType>(paddedV.getType());
-
-          if (paddedType.getDimSize(axis) > unpaddedType.getDimSize(axis)) {
-              SmallVector<int64_t> start(unpaddedType.getRank(), 0);
-              SmallVector<int64_t> limit(paddedType.getShape().begin(), paddedType.getShape().end());
-              limit[axis] = unpaddedType.getDimSize(axis);
-              SmallVector<int64_t> strides(unpaddedType.getRank(), 1);
-
-              auto sliceType = paddedType.clone(limit);
-              auto sliceOp = builder.create<stablehlo::SliceOp>(
-                  op.getLoc(), sliceType, paddedV, start, limit, strides);
-              operands.push_back(sliceOp.getResult());
-          } else {
-              operands.push_back(paddedV);
-          }
+        operands.push_back(paddedV);
       }
+    }
   }
 
-  SmallVector<int64_t> newShape(cast<RankedTensorType>(operands[0].getType()).getShape().begin(), 
-                                cast<RankedTensorType>(operands[0].getType()).getShape().end());
+  SmallVector<int64_t> newShape(
+      cast<RankedTensorType>(operands[0].getType()).getShape().begin(),
+      cast<RankedTensorType>(operands[0].getType()).getShape().end());
   newShape[axis] = 0;
   for (auto opnd : operands) {
-       newShape[axis] += cast<RankedTensorType>(opnd.getType()).getDimSize(axis);
+    newShape[axis] += cast<RankedTensorType>(opnd.getType()).getDimSize(axis);
   }
 
   auto outType = cast<RankedTensorType>(res.getType());
   auto paddedOutType = outType.clone(newShape);
 
   auto newOp = builder.create<stablehlo::ConcatenateOp>(
-       op.getLoc(), paddedOutType, operands, op.getDimension());
+      op.getLoc(), paddedOutType, operands, op.getDimension());
 
   paddedValues[res] = newOp.getResult();
   return true;
 }
 
 bool AlignmentHandler::handleElementwiseOp(Operation *op) {
-  if (!needsPadding(op->getResult(0))) return false;
+  if (!needsPadding(op->getResult(0)))
+    return false;
 
   builder.setInsertionPoint(op);
   SmallVector<Value> paddedArgs;
@@ -528,7 +559,8 @@ bool AlignmentHandler::handleDotGeneralOp(stablehlo::DotGeneralOp op) {
   auto rhs = op.getRhs();
   auto res = op.getResult();
 
-  if (!paddedValues.contains(lhs) && !paddedValues.contains(rhs)) return false;
+  if (!paddedValues.contains(lhs) && !paddedValues.contains(rhs))
+    return false;
 
   builder.setInsertionPoint(op);
   auto paddedLhs = getOrCreatePadOp(lhs);
@@ -540,7 +572,8 @@ bool AlignmentHandler::handleDotGeneralOp(stablehlo::DotGeneralOp op) {
 
   auto newOp = builder.create<stablehlo::DotGeneralOp>(
       op.getLoc(), paddedResType, paddedLhs, paddedRhs,
-      op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+      op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+      op.getAlgorithmAttr());
   eraseWithReplacement(op, newOp.getResult());
   return true;
 }
@@ -549,7 +582,8 @@ bool AlignmentHandler::handleTransposeOp(stablehlo::TransposeOp op) {
   auto input = op.getOperand();
   auto res = op.getResult();
 
-  if (!paddedValues.contains(input)) return false;
+  if (!paddedValues.contains(input))
+    return false;
 
   builder.setInsertionPoint(op);
   auto paddedInput = getOrCreatePadOp(input);
@@ -565,13 +599,15 @@ bool AlignmentHandler::handleTransposeOp(stablehlo::TransposeOp op) {
   return true;
 }
 
-bool AlignmentHandler::handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceOp op) {
+bool AlignmentHandler::handleDynamicUpdateSliceOp(
+    stablehlo::DynamicUpdateSliceOp op) {
   llvm::errs() << "Handling DynamicUpdateSliceOp\n";
   auto operand = op.getOperand();
   auto update = op.getUpdate();
   auto res = op.getResult();
 
-  if (!paddedValues.contains(operand) && !paddedValues.contains(update)) return false;
+  if (!paddedValues.contains(operand) && !paddedValues.contains(update))
+    return false;
 
   builder.setInsertionPoint(op);
   auto paddedOperand = getOrCreatePadOp(operand);
@@ -581,10 +617,12 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceO
   auto paddedUpdateType = cast<RankedTensorType>(paddedUpdate.getType());
   auto unpaddedOperandType = cast<RankedTensorType>(operand.getType());
 
-  llvm::errs() << "Unpadded Update Rank: " << unpaddedUpdateType.getRank() << " Size: " << unpaddedUpdateType.getNumElements() << "\n";
+  llvm::errs() << "Unpadded Update Rank: " << unpaddedUpdateType.getRank()
+               << " Size: " << unpaddedUpdateType.getNumElements() << "\n";
 
   bool needsSliceUpdate = false;
-  SmallVector<int64_t> updateSliceLimit(paddedUpdateType.getShape().begin(), paddedUpdateType.getShape().end());
+  SmallVector<int64_t> updateSliceLimit(paddedUpdateType.getShape().begin(),
+                                        paddedUpdateType.getShape().end());
 
   for (size_t i = 0; i < op.getStartIndices().size(); ++i) {
     llvm::errs() << "Index Loop " << i << "\n";
@@ -593,23 +631,24 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceO
     int64_t startVal = 0;
 
     if (auto constOp = dyn_cast_or_null<stablehlo::ConstantOp>(idxOp)) {
-        if (auto attr = dyn_cast<DenseIntElementsAttr>(constOp.getValue())) {
-            auto vals = attr.getValues<APInt>();
-            if (!vals.empty()) {
-                startVal = vals[0].getSExtValue(); 
-                isStatic = true;
-            }
+      if (auto attr = dyn_cast<DenseIntElementsAttr>(constOp.getValue())) {
+        auto vals = attr.getValues<APInt>();
+        if (!vals.empty()) {
+          startVal = vals[0].getSExtValue();
+          isStatic = true;
         }
+      }
     }
 
     if (!isStatic) {
+      updateSliceLimit[i] = unpaddedUpdateType.getDimSize(i);
+      needsSliceUpdate = true;
+    } else {
+      if (startVal + unpaddedUpdateType.getDimSize(i) <
+          unpaddedOperandType.getDimSize(i)) {
         updateSliceLimit[i] = unpaddedUpdateType.getDimSize(i);
         needsSliceUpdate = true;
-    } else {
-        if (startVal + unpaddedUpdateType.getDimSize(i) < unpaddedOperandType.getDimSize(i)) {
-            updateSliceLimit[i] = unpaddedUpdateType.getDimSize(i);
-            needsSliceUpdate = true;
-        }
+      }
     }
   }
 
@@ -617,13 +656,13 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceO
 
   Value slicedUpdate = paddedUpdate;
   if (needsSliceUpdate) {
-      SmallVector<int64_t> start(paddedUpdateType.getRank(), 0);
-      SmallVector<int64_t> strides(paddedUpdateType.getRank(), 1);
-      
-      auto sliceType = paddedUpdateType.clone(updateSliceLimit);
-      auto sliceOp = builder.create<stablehlo::SliceOp>(
-          op.getLoc(), sliceType, paddedUpdate, start, updateSliceLimit, strides);
-      slicedUpdate = sliceOp.getResult();
+    SmallVector<int64_t> start(paddedUpdateType.getRank(), 0);
+    SmallVector<int64_t> strides(paddedUpdateType.getRank(), 1);
+
+    auto sliceType = paddedUpdateType.clone(updateSliceLimit);
+    auto sliceOp = builder.create<stablehlo::SliceOp>(
+        op.getLoc(), sliceType, paddedUpdate, start, updateSliceLimit, strides);
+    slicedUpdate = sliceOp.getResult();
   }
 
   llvm::errs() << "Slicing indices operands\n";
@@ -631,9 +670,9 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceO
   SmallVector<Value> startIndices;
   for (auto idx : op.getStartIndices()) {
     if (paddedValues.contains(idx)) {
-       startIndices.push_back(getOrCreateSliceOp(paddedValues[idx], idx));
+      startIndices.push_back(getOrCreateSliceOp(paddedValues[idx], idx));
     } else {
-       startIndices.push_back(idx);
+      startIndices.push_back(idx);
     }
   }
 
@@ -651,19 +690,20 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceO
 }
 
 bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
-   auto parent = op->getParentOp();
-   if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent)) return false;
+  auto parent = op->getParentOp();
+  if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent))
+    return false;
 
-   bool anyPadded = false;
-   SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
-   for (auto &val : newOperands) {
+  bool anyPadded = false;
+  SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
+  for (auto &val : newOperands) {
     if (paddedValues.contains(val)) {
       val = paddedValues[val];
       anyPadded = true;
     }
-   }
-   op.getResultsMutable().assign(newOperands);
-   return anyPadded;
+  }
+  op.getResultsMutable().assign(newOperands);
+  return anyPadded;
 }
 
 Operation *createPlaceholder(Value v, OpBuilder &builder) {
@@ -680,207 +720,215 @@ Operation *createPlaceholder(Value v, OpBuilder &builder) {
 }
 
 void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
-    OpBuilder builder(func.getContext());
-    DenseMap<Value, Value> paddedValues;
-    DenseMap<Value, Value> originalValues;
+  OpBuilder builder(func.getContext());
+  DenseMap<Value, Value> paddedValues;
+  DenseMap<Value, Value> originalValues;
 
-    AlignmentHandler handler(builder, paddedValues, originalValues);
+  AlignmentHandler handler(builder, paddedValues, originalValues);
 
-    // Step 1: Initialize Original values or Pad graph boundaries with placeholders
-    DenseMap<Value, Operation*> placeholdersCreatedInStep1;
+  // Step 1: Initialize Original values or Pad graph boundaries with
+  // placeholders
+  DenseMap<Value, Operation *> placeholdersCreatedInStep1;
 
-    SmallVector<Operation*> ops;
-    func.walk([&](Operation *op) {
-      ops.push_back(op);
-      for (auto res : op->getResults()) {
-        if (handler.needsPadding(res)) {
-          OpBuilder::InsertionGuard guard(builder);
+  SmallVector<Operation *> ops;
+  func.walk([&](Operation *op) {
+    ops.push_back(op);
+    for (auto res : op->getResults()) {
+      if (handler.needsPadding(res)) {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPoint(op);
+        auto placeholder = createPlaceholder(res, builder);
+        placeholdersCreatedInStep1[res] = placeholder;
+        paddedValues[res] = placeholder->getResult(0);
+      }
+    }
+  });
+
+  func.walk([&](Block *block) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(block);
+    for (auto arg : block->getArguments()) {
+      if (handler.needsPadding(arg)) {
+        auto type = cast<RankedTensorType>(arg.getType());
+        auto alignedShape = handler.getAlignedShape(type);
+        auto paddedType = type.clone(alignedShape);
+
+        Operation *replacement = nullptr;
+        if (block == func.getEntryBlock()) {
+          replacement = createPlaceholder(arg, builder);
+        } else {
+          replacement = createPlaceholder(arg, builder);
+          placeholdersCreatedInStep1[arg] = replacement;
+        }
+        paddedValues[arg] = replacement->getResult(0);
+      }
+    }
+  });
+
+  // Step 2: Optimal Propagation Traversal
+  SmallVector<Operation *> opsToErase;
+  for (auto op : ops) {
+    llvm::errs() << "[PadForAlignment] Processing Op: " << op->getName()
+                 << "\n";
+    bool handled = false;
+    if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
+      handled = handler.handleReturnOp(returnOp);
+    } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+      handled = handler.handleConstantOp(constOp);
+    } else if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
+      handled = handler.handlePadOp(origPad);
+    } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
+      handled = handler.handleSliceOp(origSlice);
+    } else if (auto select = dyn_cast<stablehlo::SelectOp>(op)) {
+      handled = handler.handleSelectOp(select);
+    } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+      handled = handler.handleConcatenateOp(concat);
+    } else if (stablehlo::hasTraitElementwise(op) ||
+               isa<stablehlo::CompareOp>(op)) {
+      handled = handler.handleElementwiseOp(op);
+    } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+      handled = handler.handleDotGeneralOp(dot);
+    } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      handled = handler.handleBroadcastInDimOp(bcast);
+    } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
+      handled = handler.handleTransposeOp(transpose);
+    } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
+      handled = handler.handleDynamicUpdateSliceOp(dus);
+    }
+
+    if (handled && !isa<stablehlo::ReturnOp>(op)) {
+    } else {
+      // Boundary fallback: slice any padded inputs
+      for (int i = 0; i < op->getNumOperands(); ++i) {
+        auto v = op->getOperand(i);
+        if (handler.paddedValues.contains(v)) {
           builder.setInsertionPoint(op);
-          auto placeholder = createPlaceholder(res, builder);
-          placeholdersCreatedInStep1[res] = placeholder;
-          paddedValues[res] = placeholder->getResult(0);
+          auto sliced = handler.getOrCreateSliceOp(handler.paddedValues[v], v);
+          op->setOperand(i, sliced);
         }
       }
-    });
+    }
+  }
 
-    func.walk([&](Block *block) {
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(block);
-       for (auto arg : block->getArguments()) {
-           if (handler.needsPadding(arg)) {
-            auto type = cast<RankedTensorType>(arg.getType());
-            auto alignedShape = handler.getAlignedShape(type);
-            auto paddedType = type.clone(alignedShape);
+  // Step 2.25: Recreate Regional Ops (IfOp, WhileOp)
+  for (auto op : ops) {
+    if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
+      bool needsUpdate = false;
+      SmallVector<Type> newRetTypes;
+      for (auto res : ifOp.getResults()) {
+        if (handler.paddedValues.contains(res)) {
+          needsUpdate = true;
+          newRetTypes.push_back(handler.paddedValues[res].getType());
+        } else {
+          newRetTypes.push_back(res.getType());
+        }
+      }
 
-            Operation *replacement = nullptr;
-            if (block == func.getEntryBlock()) {
-              replacement = createPlaceholder(arg, builder);
-            } else {
-              replacement = createPlaceholder(arg, builder);
-              placeholdersCreatedInStep1[arg] = replacement;
+      if (needsUpdate) {
+        builder.setInsertionPoint(ifOp);
+        auto newIf = builder.create<stablehlo::IfOp>(ifOp.getLoc(), newRetTypes,
+                                                     ifOp.getPred());
+
+        newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
+        newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
+
+        for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
+          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(i));
+          if (handler.paddedValues.contains(ifOp.getResult(i))) {
+            handler.paddedValues[newIf.getResult(i)] =
+                handler.paddedValues[ifOp.getResult(i)];
+          }
+        }
+        opsToErase.push_back(ifOp);
+      }
+    } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
+      bool needsUpdate = false;
+      SmallVector<Type> newRetTypes;
+      SmallVector<Value> newOperands;
+      for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
+        auto v = whileOp->getOperand(i);
+        if (handler.paddedValues.contains(v)) {
+          needsUpdate = true;
+          newOperands.push_back(handler.paddedValues[v]);
+          newRetTypes.push_back(handler.paddedValues[v].getType());
+        } else {
+          newOperands.push_back(v);
+          newRetTypes.push_back(v.getType());
+        }
+      }
+
+      if (needsUpdate) {
+        for (auto region : {&whileOp.getCond(), &whileOp.getBody()}) {
+          auto &block = region->front();
+          for (unsigned i = 0; i < block.getNumArguments(); ++i) {
+            if (handler.paddedValues.contains(whileOp->getOperand(i))) {
+              block.getArgument(i).setType(
+                  handler.paddedValues[whileOp->getOperand(i)].getType());
             }
-            paddedValues[arg] = replacement->getResult(0);
-           }
-       }
-    });
+          }
+        }
 
-    // Step 2: Optimal Propagation Traversal
-    SmallVector<Operation*> opsToErase;
-    for (auto op : ops) {
-      llvm::errs() << "Processing Op: " << op->getName() << "\n";
-      bool handled = false;
-      if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
-        handled = handler.handlePadOp(origPad);
-      } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
-        handled = handler.handleSliceOp(origSlice);
-      } else if (auto select = dyn_cast<stablehlo::SelectOp>(op)) {
-        handled = handler.handleSelectOp(select);
-      } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
-        handled = handler.handleConcatenateOp(concat);
-      } else if (stablehlo::hasTraitElementwise(op) || isa<stablehlo::CompareOp>(op)) {
-        handled = handler.handleElementwiseOp(op);
-      } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
-        handled = handler.handleDotGeneralOp(dot);
-      } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
-        handled = handler.handleBroadcastInDimOp(bcast);
-      } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
-        handled = handler.handleTransposeOp(transpose);
-      } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
-        handled = handler.handleDynamicUpdateSliceOp(dus);
-      } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-        handled = handler.handleConstantOp(constOp);
-      } else if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
-        handled = handler.handleReturnOp(returnOp);
-      }
-      
-      if (handled && !isa<stablehlo::ReturnOp>(op)) {
-      } else {
-         // Boundary fallback: slice any padded inputs
-         for (int i = 0; i < op->getNumOperands(); ++i) {
-           auto v = op->getOperand(i);
-           if (handler.paddedValues.contains(v)) {
-             builder.setInsertionPoint(op);
-             auto sliced = handler.getOrCreateSliceOp(handler.paddedValues[v], v);
-             op->setOperand(i, sliced);
-           }
-         }
+        builder.setInsertionPoint(whileOp);
+        auto newWhile = builder.create<stablehlo::WhileOp>(
+            whileOp.getLoc(), newRetTypes, newOperands);
+
+        newWhile.getCond().takeBody(whileOp.getCond());
+        newWhile.getBody().takeBody(whileOp.getBody());
+
+        for (unsigned i = 0; i < whileOp.getNumResults(); ++i) {
+          whileOp.getResult(i).replaceAllUsesWith(newWhile.getResult(i));
+          if (handler.paddedValues.contains(whileOp.getResult(i))) {
+            handler.paddedValues[newWhile.getResult(i)] =
+                handler.paddedValues[whileOp.getResult(i)];
+          }
+        }
+        opsToErase.push_back(whileOp);
       }
     }
+  }
 
-    // Step 2.25: Recreate Regional Ops (IfOp, WhileOp)
-    for (auto op : ops) {
-      if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
-          bool needsUpdate = false;
-          SmallVector<Type> newRetTypes;
-          for (auto res : ifOp.getResults()) {
-              if (handler.paddedValues.contains(res)) {
-                  needsUpdate = true;
-                  newRetTypes.push_back(handler.paddedValues[res].getType());
-              } else {
-                  newRetTypes.push_back(res.getType());
-              }
-          }
+  // Step 2.5: Resolve Placeholders Created in Step 1
+  for (auto pair : placeholdersCreatedInStep1) {
+    Value orig = pair.first;
+    Operation *ph = pair.second;
+    Value phRes = ph->getResult(0);
 
-          if (needsUpdate) {
-              builder.setInsertionPoint(ifOp);
-              auto newIf = builder.create<stablehlo::IfOp>(
-                  ifOp.getLoc(), newRetTypes, ifOp.getPred());
-              
-              newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
-              newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
+    if (handler.paddedValues[orig] == phRes) {
+      handler.paddedValues.erase(orig); // clear cache lookup
+      builder.setInsertionPoint(ph);
+      auto realPad = handler.getOrCreatePadOp(orig);
+      phRes.replaceAllUsesWith(realPad);
+      opsToErase.push_back(ph);
+    } else {
+      phRes.replaceAllUsesWith(handler.paddedValues[orig]);
+      opsToErase.push_back(ph);
+    }
+  }
 
-              for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
-                   ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(i));
-                   if (handler.paddedValues.contains(ifOp.getResult(i))) {
-                       handler.paddedValues[newIf.getResult(i)] = handler.paddedValues[ifOp.getResult(i)];
-                   }
-              }
-              opsToErase.push_back(ifOp);
-          }
-      } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
-          bool needsUpdate = false;
-          SmallVector<Type> newRetTypes;
-          SmallVector<Value> newOperands;
-          for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
-              auto v = whileOp->getOperand(i);
-              if (handler.paddedValues.contains(v)) {
-                  needsUpdate = true;
-                  newOperands.push_back(handler.paddedValues[v]);
-                  newRetTypes.push_back(handler.paddedValues[v].getType());
-              } else {
-                  newOperands.push_back(v);
-                  newRetTypes.push_back(v.getType());
-              }
-          }
+  // Step 3: Replace uses for values that have been padded
+  for (auto pair : paddedValues) {
+    Value orig = pair.first;
+    Value padded = pair.second;
+    if (orig.use_empty())
+      continue;
 
-          if (needsUpdate) {
-              for (auto region : {&whileOp.getCond(), &whileOp.getBody()}) {
-                  auto &block = region->front();
-                  for (unsigned i = 0; i < block.getNumArguments(); ++i) {
-                      if (handler.paddedValues.contains(whileOp->getOperand(i))) {
-                          block.getArgument(i).setType(handler.paddedValues[whileOp->getOperand(i)].getType());
-                      }
-                  }
-              }
+    auto origType = cast<RankedTensorType>(orig.getType());
+    auto paddedType = cast<RankedTensorType>(padded.getType());
+    if (origType == paddedType)
+      continue;
 
-              builder.setInsertionPoint(whileOp);
-              auto newWhile = builder.create<stablehlo::WhileOp>(
-                  whileOp.getLoc(), newRetTypes, newOperands);
-              
-              newWhile.getCond().takeBody(whileOp.getCond());
-              newWhile.getBody().takeBody(whileOp.getBody());
+    builder.setInsertionPointAfterValue(padded);
+    auto sliced = handler.getOrCreateSliceOp(padded, orig);
 
-              for (unsigned i = 0; i < whileOp.getNumResults(); ++i) {
-                   whileOp.getResult(i).replaceAllUsesWith(newWhile.getResult(i));
-                   if (handler.paddedValues.contains(whileOp.getResult(i))) {
-                       handler.paddedValues[newWhile.getResult(i)] = handler.paddedValues[whileOp.getResult(i)];
-                   }
-              }
-              opsToErase.push_back(whileOp);
-          }
+    orig.replaceAllUsesWith(sliced);
+  }
+
+  // Safely delete all placeholders
+  /*
+      for (auto ph : placeholders) {
+        ph->erase();
       }
-    }
-
-    // Step 2.5: Resolve Placeholders Created in Step 1
-    for (auto pair : placeholdersCreatedInStep1) {
-       Value orig = pair.first;
-       Operation *ph = pair.second;
-       Value phRes = ph->getResult(0);
-
-       if (handler.paddedValues[orig] == phRes) {
-           handler.paddedValues.erase(orig); // clear cache lookup
-           builder.setInsertionPoint(ph);
-           auto realPad = handler.getOrCreatePadOp(orig);
-           phRes.replaceAllUsesWith(realPad);
-           opsToErase.push_back(ph);
-       } else {
-           phRes.replaceAllUsesWith(handler.paddedValues[orig]);
-           opsToErase.push_back(ph);
-       }
-    }
-
-    // Step 3: Replace uses for values that have been padded
-    for (auto pair : paddedValues) {
-      Value orig = pair.first;
-      Value padded = pair.second;
-      if (orig.use_empty()) continue;
-
-      auto origType = cast<RankedTensorType>(orig.getType());
-      auto paddedType = cast<RankedTensorType>(padded.getType());
-      if (origType == paddedType) continue;
-
-      builder.setInsertionPointAfterValue(padded);
-      auto sliced = handler.getOrCreateSliceOp(padded, orig);
-
-      orig.replaceAllUsesWith(sliced);
-    }
-
-    // Safely delete all placeholders
-/*
-    for (auto ph : placeholders) {
-      ph->erase();
-    }
-*/
+  */
 }
 
 } // namespace enzyme
