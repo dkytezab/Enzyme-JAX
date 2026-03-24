@@ -755,9 +755,9 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
 
         Operation *replacement = nullptr;
         if (block == func.getEntryBlock()) {
-          replacement = handle.createPlaceholder(arg);
+          replacement = handler.createPlaceholder(arg);
         } else {
-          replacement = handle.createPlaceholder(arg);
+          replacement = handler.createPlaceholder(arg);
           placeholdersCreatedInStep1[arg] = replacement;
         }
         paddedValues[arg] = replacement->getResult(0);
