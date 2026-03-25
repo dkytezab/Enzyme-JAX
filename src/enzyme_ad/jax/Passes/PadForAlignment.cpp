@@ -763,9 +763,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleSelectOp(select);
     } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
       handled = handler.handleConcatenateOp(concat);
-    // } else if (stablehlo::hasTraitElementwise(op) ||
-    //            isa<stablehlo::CompareOp>(op)) {
-    //   handled = handler.handleElementwiseOp(op);
+    } else if (stablehlo::hasTraitElementwise(op)) {
+      handled = handler.handleElementwiseOp(op);
     // } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
     //   handled = handler.handleDotGeneralOp(dot);
     // } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
