@@ -367,8 +367,10 @@ bool AlignmentHandler::handleSliceOp(stablehlo::SliceOp op) {
         builder, op.getLoc(), paddedOutType, sliceRes, padZero.getResult(),
         edgePaddingLow, edgePaddingHigh, interiorPadding);
     paddedValues[res] = padOp.getResult();
+    eraseWithReplacement(op, ValueRange{padOp.getResult()});
   } else {
     paddedValues[res] = sliceRes;
+    eraseWithReplacement(op, ValueRange{sliceRes});
   }
   return true;
 }
@@ -763,8 +765,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleConstantOp(constOp);
     } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
       handled = handler.handlePadOp(pad);
-    // } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
-    //   handled = handler.handleSliceOp(origSlice);
+    } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
+      handled = handler.handleSliceOp(slice);
     // } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
     //   handled = handler.handleDynamicUpdateSliceOp(dus);
     // } else if (auto select = dyn_cast<stablehlo::SelectOp>(op)) {
