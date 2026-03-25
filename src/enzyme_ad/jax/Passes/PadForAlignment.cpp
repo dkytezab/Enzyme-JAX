@@ -377,7 +377,6 @@ bool AlignmentHandler::handleSliceOp(stablehlo::SliceOp op) {
 
 bool AlignmentHandler::handleDynamicUpdateSliceOp(
     stablehlo::DynamicUpdateSliceOp op) {
-  llvm::errs() << "Handling DynamicUpdateSliceOp\n";
   auto operand = op.getOperand();
   auto update = op.getUpdate();
   auto res = op.getResult();
@@ -393,15 +392,11 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
   auto paddedUpdateType = cast<RankedTensorType>(paddedUpdate.getType());
   auto unpaddedOperandType = cast<RankedTensorType>(operand.getType());
 
-  llvm::errs() << "Unpadded Update Rank: " << unpaddedUpdateType.getRank()
-               << " Size: " << unpaddedUpdateType.getNumElements() << "\n";
-
   bool needsSliceUpdate = false;
   SmallVector<int64_t> updateSliceLimit(paddedUpdateType.getShape().begin(),
                                         paddedUpdateType.getShape().end());
 
   for (size_t i = 0; i < op.getStartIndices().size(); ++i) {
-    llvm::errs() << "Index Loop " << i << "\n";
     auto idxOp = op.getStartIndices()[i].getDefiningOp();
     bool isStatic = false;
     int64_t startVal = 0;
@@ -428,8 +423,6 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
     }
   }
 
-  llvm::errs() << "Needs Slice Update: " << needsSliceUpdate << "\n";
-
   Value slicedUpdate = paddedUpdate;
   if (needsSliceUpdate) {
     SmallVector<int64_t> start(paddedUpdateType.getRank(), 0);
@@ -441,8 +434,6 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
     slicedUpdate = sliceOp.getResult();
   }
 
-  llvm::errs() << "Slicing indices operands\n";
-
   SmallVector<Value> startIndices;
   for (auto idx : op.getStartIndices()) {
     if (paddedValues.contains(idx)) {
@@ -452,8 +443,6 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
     }
   }
 
-  llvm::errs() << "Creating DynamicUpdateSliceOp output node\n";
-
   auto outType = cast<RankedTensorType>(res.getType());
   auto alignedOutShape = getAlignedShape(outType);
   auto paddedOutType = outType.clone(alignedOutShape);
@@ -462,6 +451,7 @@ bool AlignmentHandler::handleDynamicUpdateSliceOp(
       op.getLoc(), paddedOutType, paddedOperand, slicedUpdate, startIndices);
 
   paddedValues[res] = newOp.getResult();
+  eraseWithReplacement(op, ValueRange{newOp.getResult()});
   return true;
 }
 
@@ -767,8 +757,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handlePadOp(pad);
     } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
       handled = handler.handleSliceOp(slice);
-    // } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
-    //   handled = handler.handleDynamicUpdateSliceOp(dus);
+    } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
+      handled = handler.handleDynamicUpdateSliceOp(dus);
     // } else if (auto select = dyn_cast<stablehlo::SelectOp>(op)) {
     //   handled = handler.handleSelectOp(select);
     // } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
