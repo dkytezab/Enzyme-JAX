@@ -1,5 +1,4 @@
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-#include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
