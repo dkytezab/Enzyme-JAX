@@ -486,9 +486,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     switch (op.getUplo()) {
     case enzymexla::LapackUplo::F:
       customCallUplo = standardizeUplo(op.getOutputUplo());
-      needsCopy = op.getOutputUplo() == enzymexla::LapackUplo::F
-                      ? CopyMode::COPY
-                      : CopyMode::NOT_NEEDED;
+      needsCopy = op.getOutputUplo() == BlasUplo::any ? CopyMode::COPY
+                                                      : CopyMode::NOT_NEEDED;
       break;
     case enzymexla::LapackUplo::L:
       customCallUplo = op.getUplo();
@@ -666,8 +665,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       auto uploConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(makeAttr(
-              uint8Type,
-              customCallUplo == enzymexla::LapackUplo::U ? 'L' : 'U')));
+              uint8Type, customCallUplo == BlasUplo::upper ? 'L' : 'U')));
       // We intentionally flip transpose here, this allows us to pass in
       // the data as a row-major format without paying the cost of
       // layout transformation to a col-major (which CPU BLAS uses)
