@@ -19,7 +19,7 @@ func.func @test_arg_ret(%arg0: tensor<4x760x1533xf32>) -> tensor<4x760x1533xf32>
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %0 = stablehlo.pad %arg0, %cst, low = [0, 0, 0], high = [0, 8, 3], interior = [0, 0, 0] : (tensor<4x760x1533xf32>, tensor<f32>) -> tensor<4x768x1536xf32>
 // CHECK-NEXT:     %1 = stablehlo.slice %0 [0:4, 0:760, 0:1533] : (tensor<4x768x1536xf32>) -> tensor<4x760x1533xf32>
-// CHECK-NEXT:     return %arg0 : tensor<4x760x1533xf32>
+// CHECK-NEXT:     return %1 : tensor<4x760x1533xf32>
 // CHECK-NEXT: }
 
 func.func @test_constant() -> () {
@@ -29,10 +29,7 @@ func.func @test_constant() -> () {
 
 // CHECK: func.func @test_constant() {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x760x1533xf32>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.pad %cst, %cst_0, low = [0, 0, 0], high = [0, 8, 3], interior = [0, 0, 0] : (tensor<4x760x1533xf32>, tensor<f32>) -> tensor<4x768x1536xf32>
-// CHECK-NEXT:     %1 = stablehlo.slice %0 [0:4, 0:760, 0:1533] : (tensor<4x768x1536xf32>) -> tensor<4x760x1533xf32>
-// CHECK-NEXT:     return
+// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>// CHECK-NEXT:     return
 // CHECK-NEXT: }
 
 func.func @test_constant_ret() -> tensor<4x760x1533xf32> {
@@ -44,7 +41,7 @@ func.func @test_constant_ret() -> tensor<4x760x1533xf32> {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x768x1536xf32>
 // CHECK-NEXT:     %0 = stablehlo.slice %cst [0:4, 0:760, 0:1533] : (tensor<4x768x1536xf32>) -> tensor<4x760x1533xf32>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<4x760x1533xf32>
-// CHECK-NEXT:     return %cst_0 : tensor<4x760x1533xf32>
+// CHECK-NEXT:     return %0 : tensor<4x760x1533xf32>
 // CHECK-NEXT: }
 
 func.func @test_transpose(%arg0: tensor<4x760x1533xf32>) -> () {
@@ -60,6 +57,5 @@ func.func @test_transpose(%arg0: tensor<4x760x1533xf32>) -> () {
 // CHECK-NEXT:     %3 = stablehlo.transpose %arg0, dims = [0, 1, 2] : (tensor<4x760x1533xf32>) -> tensor<4x760x1533xf32>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %4 = stablehlo.pad %3, %cst_0, low = [0, 0, 0], high = [0, 8, 3], interior = [0, 0, 0] : (tensor<4x760x1533xf32>, tensor<f32>) -> tensor<4x768x1536xf32>
-// CHECK-NEXT:     %5 = stablehlo.slice %4 [0:4, 0:760, 0:1533] : (tensor<4x768x1536xf32>) -> tensor<4x760x1533xf32>
 // CHECK-NEXT:     return
 // CHECK-NEXT: }
