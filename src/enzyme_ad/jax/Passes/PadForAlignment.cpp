@@ -532,6 +532,7 @@ bool AlignmentHandler::handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op) {
   }
 
   paddedValues[res] = currentOut;
+  eraseWithReplacement(op, ValueRange{currentOut});
   return true;
 }
 
@@ -767,8 +768,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleElementwiseOp(op);
     } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
       handled = handler.handleDotGeneralOp(dot);
-    // } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
-    //   handled = handler.handleBroadcastInDimOp(bcast);
+    } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+      handled = handler.handleBroadcastInDimOp(bcast);
     } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
       handled = handler.handleTransposeOp(transpose);
     }
