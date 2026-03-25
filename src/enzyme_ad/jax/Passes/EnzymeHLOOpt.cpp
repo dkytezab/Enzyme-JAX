@@ -9076,7 +9076,6 @@ struct BroadcastIotaSimplify
         int broadcast_dim = -1;
         auto result_shape =
             cast<mlir::ShapedType>(result_type.front()).getShape();
-        auto max_dims = result_shape.size();
 
         if (broadcast.getType().getElementType().isInteger(1)) {
           // true, false, .... false.  -> iota == 0
@@ -9252,18 +9251,11 @@ struct BroadcastIotaSimplify
           }
         }
 
-        for (broadcast_dim = 0; broadcast_dim < max_dims; ++broadcast_dim) {
-          bool found = false;
-          for (auto &elem : broadcast.getBroadcastDimensions()) {
-            if (elem == broadcast_dim) {
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            break;
-        }
-        assert(broadcast_dim != -1);
+        // The input is 1D, so there is exactly one broadcast dimension.
+        // The iota dimension in the output is the one that corresponds to the
+        // input dimension (i.e., where values vary), which is
+        // broadcast_dimensions[0].
+        broadcast_dim = broadcast.getBroadcastDimensions()[0];
 
         if (diff == 0)
           return failure();
