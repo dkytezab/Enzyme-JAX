@@ -762,8 +762,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     //   // handled = handler.handleFuncOp(funcOp);
     } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
       /* handled = */handler.handleConstantOp(constOp);
-    // } else if (auto origPad = dyn_cast<stablehlo::PadOp>(op)) {
-    //   /* handled = */handler.handlePadOp(origPad);
+    } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
+      /* handled = */handler.handlePadOp(pad);
     // } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
     //   /* handled = */handler.handleSliceOp(origSlice);
     // } else if (auto select = dyn_cast<stablehlo::SelectOp>(op)) {
