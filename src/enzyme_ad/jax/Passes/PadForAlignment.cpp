@@ -911,9 +911,15 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   //   op->erase();
   // }
 
-  // Safely delete all placeholders
+  // safely delete all placeholders
   for (auto [_, ph] : placeholders) {
     ph->erase();
+  }
+
+  // safely delete any original ops that are now dead
+  for (auto op : handler.toErase) {
+    assert(op->use_empty());
+    op->erase();
   }
 
   // llvm::errs() << "[@] === BEGIN DUMP ===\n";
