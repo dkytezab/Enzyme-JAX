@@ -756,32 +756,34 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
 
   // Step 2: Optimal Propagation Traversal
   for (auto op : ops) {
-    // bool handled = false;
+    bool handled = false;
     if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
       // llvm::errs() << "[PadForAlignment] Handling FuncOp\n";
     //   // handled = handler.handleFuncOp(funcOp);
     } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
-      /* handled = */handler.handleConstantOp(constOp);
+      handled = handler.handleConstantOp(constOp);
     } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
-      /* handled = */handler.handlePadOp(pad);
+      handled = handler.handlePadOp(pad);
     // } else if (auto origSlice = dyn_cast<stablehlo::SliceOp>(op)) {
-    //   /* handled = */handler.handleSliceOp(origSlice);
+    //   handled = handler.handleSliceOp(origSlice);
     // } else if (auto select = dyn_cast<stablehlo::SelectOp>(op)) {
-    //   /* handled = */handler.handleSelectOp(select);
+    //   handled = handler.handleSelectOp(select);
     // } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
-    //   /* handled = */handler.handleConcatenateOp(concat);
+    //   handled = handler.handleConcatenateOp(concat);
     // } else if (stablehlo::hasTraitElementwise(op) ||
     //            isa<stablehlo::CompareOp>(op)) {
-    //   /* handled = */handler.handleElementwiseOp(op);
+    //   handled = handler.handleElementwiseOp(op);
     // } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
-    //   /* handled = */handler.handleDotGeneralOp(dot);
+    //   handled = handler.handleDotGeneralOp(dot);
     // } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
-    //   /* handled = */handler.handleBroadcastInDimOp(bcast);
+    //   handled = handler.handleBroadcastInDimOp(bcast);
     // } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
-    //   /* handled = */handler.handleTransposeOp(transpose);
+    //   handled = handler.handleTransposeOp(transpose);
     // } else if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
-    //   /* handled = */handler.handleDynamicUpdateSliceOp(dus);
-    } else {
+    //   handled = handler.handleDynamicUpdateSliceOp(dus);
+    }
+
+    if (!handled) {
       // Boundary fallback: slice any padded inputs
       for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
         if (paddedValues.contains(operand)) {
