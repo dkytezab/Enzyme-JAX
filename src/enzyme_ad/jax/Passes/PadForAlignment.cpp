@@ -169,7 +169,7 @@ Value AlignmentHandler::getOrCreatePadOp(Value v) {
   auto elementOp = builder.create<stablehlo::ConstantOp>(
       v.getLoc(),
       DenseElementsAttr::get(RankedTensorType::get({}, type.getElementType()),
-                             builder.getZeroAttr(type.getElementType())));
+                             makeAttr(type.getElementType(), 0)));
 
   SmallVector<int64_t> edgePaddingLow(type.getRank(), 0);
   SmallVector<int64_t> edgePaddingHigh(type.getRank(), 0);
