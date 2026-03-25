@@ -76,6 +76,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
   std::string backend;
   int64_t blasIntWidth;
+
   SymmOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
@@ -971,7 +972,7 @@ struct LowerEnzymeXLABLASPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
+    patterns.add<SymmOpLowering, SyrkOpLowering>(backend, blasIntWidth,
                                                  context);
     patterns.add<TrsmOpLowering>(context);
 
@@ -986,7 +987,7 @@ struct LowerEnzymeXLABLASPass
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
       if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
-        op->emitError("Failed to lower enzymexla.blas operation");
+        op->emitError("Failed to lower blas operation");
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
