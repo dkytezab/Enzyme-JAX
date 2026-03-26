@@ -31,7 +31,7 @@ index b89dbd4689..c1d94dc9f0 100644
    RegisterPass<ReduceWindowRewriter>(/*base_length=*/16);
    RegisterPass<ReorderConvertReduceAdd>();
 diff --git a/xla/hlo/transforms/simplifiers/BUILD b/xla/hlo/transforms/simplifiers/BUILD
-index 0d20742635..7f539851b5 100644
+index 0d20742635..e9a07f5826 100644
 --- a/xla/hlo/transforms/simplifiers/BUILD
 +++ b/xla/hlo/transforms/simplifiers/BUILD
 @@ -188,6 +188,41 @@ xla_cc_test(
@@ -47,11 +47,11 @@ index 0d20742635..7f539851b5 100644
 +        "//xla:shape_util",
 +        "//xla:types",
 +        "//xla:window_util",
++        "//xla/hlo/evaluator:hlo_evaluator",
 +        "//xla/hlo/ir:hlo",
 +        "//xla/hlo/pass:hlo_pass",
 +        "//xla/tsl/platform:errors",
 +        "//xla/tsl/platform:logging",
-+        "//xla/tsl/platform:status",
 +        "//xla/tsl/platform:statusor",
 +        "@com_google_absl//absl/algorithm:container",
 +        "@com_google_absl//absl/container:flat_hash_set",
@@ -78,10 +78,10 @@ index 0d20742635..7f539851b5 100644
      srcs = ["float_normalization.cc"],
 diff --git a/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc b/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
 new file mode 100644
-index 0000000000..807dd96e07
+index 0000000000..c798ca7bfe
 --- /dev/null
 +++ b/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,900 @@
 +/* Copyright 2025 The OpenXLA Authors.
 +
 +Licensed under the Apache License, Version 2.0 (the "License");
@@ -109,6 +109,7 @@ index 0000000000..807dd96e07
 +#include "absl/container/flat_hash_set.h"
 +#include "absl/status/statusor.h"
 +#include "absl/strings/string_view.h"
++#include "xla/hlo/evaluator/hlo_evaluator.h"
 +#include "xla/hlo/ir/hlo_computation.h"
 +#include "xla/hlo/ir/hlo_instruction.h"
 +#include "xla/hlo/ir/hlo_module.h"
@@ -123,13 +124,6 @@ index 0000000000..807dd96e07
 +
 +namespace xla {
 +namespace {
-+
-+bool IsCommutative(HloOpcode opcode) {
-+  return opcode == HloOpcode::kAdd || opcode == HloOpcode::kMultiply ||
-+         opcode == HloOpcode::kMaximum || opcode == HloOpcode::kMinimum ||
-+         opcode == HloOpcode::kAnd || opcode == HloOpcode::kOr ||
-+         opcode == HloOpcode::kXor;
-+}
 +
 +HloComputation* GetOrCreateReducer(HloModule* module, HloOpcode opcode,
 +                                   PrimitiveType type) {
@@ -174,68 +168,143 @@ index 0000000000..807dd96e07
 +
 +struct WeightedSlice {
 +  HloInstruction* slice;
-+  double weight;
++  Literal weight;
 +  HloInstruction* array_weight = nullptr;
 +
 +  bool is_scalar() const { return array_weight == nullptr; }
 +};
-+bool ExtractWeightedSlices(HloInstruction* inst,
-+                           std::vector<WeightedSlice>& slices,
-+                           double current_weight = 1.0) {
-+  if (inst->opcode() == HloOpcode::kSlice) {
-+    slices.push_back({inst, current_weight, nullptr});
-+    return true;
++
++bool CompareInstruction(const HloInstruction* a, const HloInstruction* b) {
++  if (a->opcode() != b->opcode()) {
++    return a->opcode() < b->opcode();
 +  }
++  if (a->opcode() == HloOpcode::kSlice && b->opcode() == HloOpcode::kSlice) {
++    if (a->operand(0)->unique_id() != b->operand(0)->unique_id()) {
++      return CompareInstruction(a->operand(0), b->operand(0));
++    }
++    if (!absl::c_equal(a->slice_starts(), b->slice_starts())) {
++      return absl::c_lexicographical_compare(a->slice_starts(),
++                                             b->slice_starts());
++    }
++    if (!absl::c_equal(a->slice_limits(), b->slice_limits())) {
++      return absl::c_lexicographical_compare(a->slice_limits(),
++                                             b->slice_limits());
++    }
++    if (!absl::c_equal(a->slice_strides(), b->slice_strides())) {
++      return absl::c_lexicographical_compare(a->slice_strides(),
++                                             b->slice_strides());
++    }
++  }
++  if (a->opcode() == HloOpcode::kPad && b->opcode() == HloOpcode::kPad) {
++    if (a->operand(0)->unique_id() != b->operand(0)->unique_id()) {
++      return CompareInstruction(a->operand(0), b->operand(0));
++    }
++    if (a->operand(1)->unique_id() != b->operand(1)->unique_id()) {
++      return CompareInstruction(a->operand(1), b->operand(1));
++    }
++    const PaddingConfig& a_pad = a->padding_config();
++    const PaddingConfig& b_pad = b->padding_config();
++    for (int i = 0; i < a_pad.dimensions_size(); ++i) {
++      if (a_pad.dimensions(i).edge_padding_low() !=
++          b_pad.dimensions(i).edge_padding_low()) {
++        return a_pad.dimensions(i).edge_padding_low() >
++               b_pad.dimensions(i).edge_padding_low();
++      }
++      if (a_pad.dimensions(i).edge_padding_high() !=
++          b_pad.dimensions(i).edge_padding_high()) {
++        return a_pad.dimensions(i).edge_padding_high() <
++               b_pad.dimensions(i).edge_padding_high();
++      }
++      if (a_pad.dimensions(i).interior_padding() !=
++          b_pad.dimensions(i).interior_padding()) {
++        return a_pad.dimensions(i).interior_padding() <
++               b_pad.dimensions(i).interior_padding();
++      }
++    }
++  }
++  return a->unique_id() < b->unique_id();
++}
++
++bool CompareWeightedSlices(const WeightedSlice& a, const WeightedSlice& b) {
++  if (a.slice->unique_id() != b.slice->unique_id()) {
++    return CompareInstruction(a.slice, b.slice);
++  }
++  if (!a.array_weight && !b.array_weight) {
++    return false;
++  } else if (!a.array_weight) {
++    return true;
++  } else if (!b.array_weight) {
++    return false;
++  } else {
++    return CompareInstruction(a.array_weight, b.array_weight);
++  }
++}
++
++void ExtractWeightedSlices(
++    HloInstruction* inst, std::vector<WeightedSlice>& slices,
++    std::optional<Literal> current_weight = std::nullopt) {
++  HloEvaluator evaluator;
++  Literal cw;
++  if (!current_weight.has_value()) {
++    cw = LiteralUtil::One(inst->shape().element_type());
++  } else {
++    cw = std::move(*current_weight);
++  }
++
 +  if (inst->opcode() == HloOpcode::kMultiply) {
 +    HloInstruction* lhs = inst->mutable_operand(0);
 +    HloInstruction* rhs = inst->mutable_operand(1);
-+    std::optional<double> val = std::nullopt;
++    std::optional<Literal> val = std::nullopt;
 +    HloInstruction* other = nullptr;
 +
-+    auto get_const = [](HloInstruction* op) -> std::optional<double> {
++    auto get_const = [](HloInstruction* op) -> std::optional<Literal> {
 +      if (op->opcode() == HloOpcode::kBroadcast) {
 +        op = op->mutable_operand(0);
 +      }
 +      if (op->opcode() == HloOpcode::kConstant) {
 +        if (ShapeUtil::IsScalar(op->shape())) {
-+          return op->literal().GetAsDouble({});
++          return op->literal().Clone();
 +        }
 +        if (op->literal().IsAllFirst()) {
-+          std::vector<int64_t> zeros(op->shape().dimensions_size(), 0);
-+          return op->literal().GetAsDouble(zeros);
++          return LiteralUtil::GetFirstScalarLiteral(op->literal());
 +        }
 +      }
 +      return std::nullopt;
 +    };
 +
 +    if (auto l_val = get_const(lhs)) {
-+      val = *l_val;
++      val = std::move(*l_val);
 +      other = rhs;
 +    } else if (auto r_val = get_const(rhs)) {
-+      val = *r_val;
++      val = std::move(*r_val);
 +      other = lhs;
 +    }
 +
 +    if (val.has_value() && other != nullptr) {
-+      return ExtractWeightedSlices(other, slices, current_weight * (*val));
-+    } else if (lhs->opcode() == HloOpcode::kSlice &&
-+               rhs->opcode() == HloOpcode::kSlice) {
-+      slices.push_back({lhs, current_weight, rhs});
-+      return true;
++      Literal next_weight =
++          evaluator.EvaluateElementwiseBinaryOp(HloOpcode::kMultiply, cw, *val)
++              .value();
++      ExtractWeightedSlices(other, slices, std::move(next_weight));
++      return;
++    } else {
++      slices.push_back({lhs, std::move(cw), rhs});
++      return;
 +    }
 +  }
 +  if (inst->opcode() == HloOpcode::kAdd) {
-+    return ExtractWeightedSlices(inst->mutable_operand(0), slices,
-+                                 current_weight) &&
-+           ExtractWeightedSlices(inst->mutable_operand(1), slices,
-+                                 current_weight);
++    ExtractWeightedSlices(inst->mutable_operand(0), slices, cw.Clone());
++    ExtractWeightedSlices(inst->mutable_operand(1), slices, std::move(cw));
++    return;
 +  }
 +  if (inst->opcode() == HloOpcode::kSubtract) {
-+    return ExtractWeightedSlices(inst->mutable_operand(0), slices,
-+                                 current_weight) &&
-+           ExtractWeightedSlices(inst->mutable_operand(1), slices,
-+                                 -current_weight);
++    Literal neg_weight =
++        evaluator.EvaluateElementwiseUnaryOp(HloOpcode::kNegate, cw).value();
++    ExtractWeightedSlices(inst->mutable_operand(0), slices, cw.Clone());
++    ExtractWeightedSlices(inst->mutable_operand(1), slices,
++                          std::move(neg_weight));
++    return;
 +  }
++
 +  if (inst->opcode() == HloOpcode::kDot) {
 +    HloInstruction* lhs = inst->mutable_operand(0);
 +    HloInstruction* rhs = inst->mutable_operand(1);
@@ -255,25 +324,57 @@ index 0000000000..807dd96e07
 +      for (int64_t i = 0; i < num_slices; ++i) {
 +        HloInstruction* reshape = lhs->mutable_operand(i);
 +        if (reshape->opcode() != HloOpcode::kReshape ||
-+            reshape->operand(0)->opcode() != HloOpcode::kSlice) {
++            (reshape->operand(0)->opcode() != HloOpcode::kSlice &&
++             reshape->operand(0)->opcode() != HloOpcode::kPad)) {
 +          all_good = false;
 +          break;
 +        }
-+        std::optional<double> w = rhs->literal().GetAsDouble({i});
-+        if (!w.has_value()) {
-+          all_good = false;
-+          break;
-+        }
++        std::vector<int64_t> starts = {i};
++        std::vector<int64_t> limits = {i + 1};
++        Literal scalar_w = LiteralUtil::GetFirstScalarLiteral(
++            rhs->literal().Slice(starts, limits));
++        Literal next_w =
++            evaluator
++                .EvaluateElementwiseBinaryOp(HloOpcode::kMultiply, cw, scalar_w)
++                .value();
 +        temp_slices.push_back(
-+            {reshape->mutable_operand(0), current_weight * (*w), nullptr});
++            {reshape->mutable_operand(0), std::move(next_w), nullptr});
 +      }
 +      if (all_good) {
-+        slices.insert(slices.end(), temp_slices.begin(), temp_slices.end());
-+        return true;
++        slices.insert(slices.end(),
++                      std::make_move_iterator(temp_slices.begin()),
++                      std::make_move_iterator(temp_slices.end()));
 +      }
++      return;
 +    }
 +  }
-+  return false;
++
++  // Universal Element-wise extraction fallback
++  slices.push_back({inst, std::move(cw), nullptr});
++  return;
++}
++
++absl::StatusOr<HloInstruction*> CreateReduceWindow(
++    HloComputation* computation, Shape shape, HloInstruction* new_base_op,
++    HloOpcode opcode, int64_t dim, int64_t current_window_size,
++    int64_t window_dilation) {
++  HloComputation* reducer =
++      GetOrCreateReducer(computation->parent(), opcode, shape.element_type());
++  HloInstruction* init_val =
++      CreateInitValue(computation, opcode, shape.element_type());
++  if (!init_val || !reducer) {
++    return absl::StatusOr<HloInstruction*>{};
++  }
++
++  int rank = new_base_op->shape().dimensions_size();
++  Window window = window_util::MakeWindow(std::vector<int64_t>(rank, 1));
++  window.mutable_dimensions(dim)->set_size(current_window_size);
++  window.mutable_dimensions(dim)->set_window_dilation(window_dilation);
++
++  HloInstruction* rw =
++      computation->AddInstruction(HloInstruction::CreateReduceWindow(
++          shape, new_base_op, init_val, window, reducer));
++  return rw;
 +}
 +
 +absl::StatusOr<bool> RunOnComputation(HloComputation* computation) {
@@ -316,553 +417,528 @@ index 0000000000..807dd96e07
 +      computation->MakeInstructionPostOrder();
 +
 +  for (HloInstruction* inst : instructions) {
-+    if (inst->IsDead()) continue;
-+    if (inst->operand_count() != 2) continue;
-+    if (!IsCommutative(inst->opcode()) &&
-+        inst->opcode() != HloOpcode::kSubtract)
++    if (inst->IsDead()) {
 +      continue;
++    }
++    if (inst->operand_count() != 2) {
++      continue;
++    }
++    if (!HloOpcodeIsBinaryCommutative(inst->opcode()) &&
++        inst->opcode() != HloOpcode::kSubtract) {
++      continue;
++    }
 +
 +    HloInstruction* lhs = inst->mutable_operand(0);
 +    HloInstruction* rhs = inst->mutable_operand(1);
 +
-+    if (inst->opcode() == HloOpcode::kSubtract ||
-+        inst->opcode() == HloOpcode::kAdd) {
-+      std::vector<WeightedSlice> lhs_slices, rhs_slices;
-+      // For subtract/add with weighted slice combinations we build dot
-+      // convolution. But we require matching both sides initially to avoid
-+      // turning single raw slices into dots unnecessarily.
-+      if (ExtractWeightedSlices(lhs, lhs_slices, 1.0) &&
-+          ExtractWeightedSlices(
-+              rhs, rhs_slices,
-+              inst->opcode() == HloOpcode::kSubtract ? -1.0 : 1.0)) {
-+        std::vector<WeightedSlice> combined = lhs_slices;
-+        combined.insert(combined.end(), rhs_slices.begin(), rhs_slices.end());
-+
-+        bool valid = !combined.empty();
-+        HloInstruction* base = nullptr;
-+        Shape slice_shape;
-+        int rank = -1;
-+
-+        if (valid) {
-+          if (combined[0].array_weight != nullptr && combined.size() >= 2) {
-+            HloInstruction* cand1 = combined[0].slice->mutable_operand(0);
-+            HloInstruction* cand2 =
-+                combined[0].array_weight->mutable_operand(0);
-+            HloInstruction* other1 = combined[1].slice->mutable_operand(0);
-+            HloInstruction* other2 =
-+                combined[1].array_weight->mutable_operand(0);
-+            if (cand1 == other1 || cand1 == other2) {
-+              base = cand1;
-+            } else if (cand2 == other1 || cand2 == other2) {
-+              base = cand2;
-+            } else {
-+              base = cand1;
-+            }
-+          } else {
-+            base = combined[0].slice->mutable_operand(0);
-+          }
-+
-+          slice_shape = combined[0].slice->shape();
-+          rank = slice_shape.dimensions_size();
-+
-+          for (size_t i = 0; i < combined.size(); ++i) {
-+            auto& ws = combined[i];
-+            if (ws.slice->mutable_operand(0) != base &&
-+                ws.array_weight != nullptr) {
-+              if (ws.array_weight->mutable_operand(0) == base) {
-+                std::swap(ws.slice, ws.array_weight);
-+              }
-+            }
-+          }
-+
-+          for (auto& ws : combined) {
-+            if (ws.slice->mutable_operand(0) != base ||
-+                !ShapeUtil::SameDimensions(ws.slice->shape(), slice_shape) ||
-+                !absl::c_all_of(ws.slice->slice_strides(),
-+                                [](int64_t s) { return s == 1; })) {
-+              valid = false;
-+              break;
-+            }
-+          }
-+
-+          bool has_array_weights = false;
-+          HloInstruction* array_weight_base = nullptr;
-+          if (valid) {
-+            has_array_weights = combined[0].array_weight != nullptr;
-+            if (has_array_weights) {
-+              array_weight_base = combined[0].array_weight->mutable_operand(0);
-+            }
-+            for (auto& ws : combined) {
-+              if ((ws.array_weight != nullptr) != has_array_weights) {
-+                valid = false;
-+                break;
-+              }
-+              if (has_array_weights) {
-+                if (ws.array_weight->mutable_operand(0) != array_weight_base ||
-+                    !ShapeUtil::SameDimensions(ws.array_weight->shape(),
-+                                               slice_shape) ||
-+                    !absl::c_all_of(ws.array_weight->slice_strides(),
-+                                    [](int64_t s) { return s == 1; })) {
-+                  valid = false;
-+                  break;
-+                }
-+              }
-+            }
-+          }
-+        }
-+
-+        int64_t differing_dim = -1;
-+        if (valid) {
-+          for (int i = 0; i < rank; ++i) {
-+            int64_t start = combined[0].slice->slice_starts(i);
-+            bool ok = true;
-+            for (size_t j = 1; j < combined.size(); ++j) {
-+              if (combined[j].slice->slice_starts(i) != start ||
-+                  combined[j].slice->slice_limits(i) !=
-+                      combined[0].slice->slice_limits(i)) {
-+                ok = false;
-+                break;
-+              }
-+            }
-+            if (!ok) {
-+              if (differing_dim != -1) {
-+                differing_dim = -1;
-+                valid = false;
-+                break;
-+              }
-+              differing_dim = i;
-+            }
-+          }
-+        }
-+
-+        if (valid && differing_dim == -1) differing_dim = 0;
-+
-+        if (valid) {
-+          std::sort(
-+              combined.begin(), combined.end(),
-+              [differing_dim](const WeightedSlice& a, const WeightedSlice& b) {
-+                return a.slice->slice_starts(differing_dim) <
-+                       b.slice->slice_starts(differing_dim);
-+              });
-+
-+          std::vector<WeightedSlice> folded;
-+          for (auto& ws : combined) {
-+            if (folded.empty()) {
-+              folded.push_back(ws);
-+            } else {
-+              if (ws.slice->slice_starts(differing_dim) ==
-+                  folded.back().slice->slice_starts(differing_dim)) {
-+                folded.back().weight += ws.weight;
-+              } else {
-+                folded.push_back(ws);
-+              }
-+            }
-+          }
-+
-+          folded.erase(std::remove_if(folded.begin(), folded.end(),
-+                                      [](const WeightedSlice& ws) {
-+                                        return std::abs(ws.weight) < 1e-6;
-+                                      }),
-+                       folded.end());
-+
-+          // If we just mapped a vanilla commutative add over 2 slices, skip it
-+          // so the subsequent reduce_window pass fires instead!
-+          if (!folded.empty() &&
-+              !(inst->opcode() == HloOpcode::kAdd && folded.size() == 2 &&
-+                folded[0].array_weight == nullptr &&
-+                std::abs(folded[0].weight - 1.0) < 1e-6 &&
-+                std::abs(folded[1].weight - 1.0) < 1e-6)) {
-+            if (folded.size() == 1 && std::abs(folded[0].weight - 1.0) < 1e-6) {
-+              TF_CHECK_OK(
-+                  computation->ReplaceInstruction(inst, folded[0].slice));
-+              changed = true;
-+              continue;
-+            }
-+
-+            if (folded.size() >= 2) {
-+              bool has_array_weights = folded[0].array_weight != nullptr;
-+              Shape reshape_shape = slice_shape;
-+              std::vector<int64_t> concat_dims = {1};
-+              for (int64_t d : reshape_shape.dimensions())
-+                concat_dims.push_back(d);
-+              Shape new_shape = ShapeUtil::MakeShape(
-+                  reshape_shape.element_type(), concat_dims);
-+
-+              std::vector<HloInstruction*> reshaped_slices;
-+              std::vector<HloInstruction*> reshaped_array_weights;
-+              PrimitiveType ptype = inst->shape().element_type();
-+
-+              for (auto& ws : folded) {
-+                reshaped_slices.push_back(computation->AddInstruction(
-+                    HloInstruction::CreateReshape(new_shape, ws.slice)));
-+                if (has_array_weights) {
-+                  HloInstruction* aw = ws.array_weight;
-+                  if (std::abs(ws.weight - 1.0) > 1e-6) {
-+                    HloInstruction* scalar;
-+                    switch (ptype) {
-+                      case F32:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<float>(
-+                                    static_cast<float>(ws.weight))));
-+                        break;
-+                      case F64:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<double>(
-+                                    static_cast<double>(ws.weight))));
-+                        break;
-+                      case BF16:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<bfloat16>(
-+                                    static_cast<bfloat16>(ws.weight))));
-+                        break;
-+                      case F16:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<half>(
-+                                    static_cast<half>(ws.weight))));
-+                        break;
-+                      case S32:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<int32_t>(
-+                                    static_cast<int32_t>(ws.weight))));
-+                        break;
-+                      case S64:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<int64_t>(
-+                                    static_cast<int64_t>(ws.weight))));
-+                        break;
-+                      default:
-+                        scalar = computation->AddInstruction(
-+                            HloInstruction::CreateConstant(
-+                                LiteralUtil::CreateR0<float>(
-+                                    static_cast<float>(ws.weight))));
-+                        break;
-+                    }
-+                    HloInstruction* bcast = computation->AddInstruction(
-+                        HloInstruction::CreateBroadcast(aw->shape(), scalar,
-+                                                        {}));
-+                    aw = computation->AddInstruction(
-+                        HloInstruction::CreateBinary(
-+                            aw->shape(), HloOpcode::kMultiply, aw, bcast));
-+                  }
-+                  reshaped_array_weights.push_back(computation->AddInstruction(
-+                      HloInstruction::CreateReshape(new_shape, aw)));
-+                }
-+              }
-+
-+              Shape concat_shape = new_shape;
-+              concat_shape.set_dimensions(0, folded.size());
-+              HloInstruction* concat =
-+                  computation->AddInstruction(HloInstruction::CreateConcatenate(
-+                      concat_shape, reshaped_slices, 0));
-+
-+              HloInstruction* replacement = nullptr;
-+
-+              if (has_array_weights) {
-+                HloInstruction* concat_weights = computation->AddInstruction(
-+                    HloInstruction::CreateConcatenate(
-+                        concat_shape, reshaped_array_weights, 0));
-+
-+                DotDimensionNumbers dnums;
-+                dnums.add_lhs_contracting_dimensions(0);
-+                dnums.add_rhs_contracting_dimensions(0);
-+                for (int i = 1; i <= rank; ++i) {
-+                  dnums.add_lhs_batch_dimensions(i);
-+                  dnums.add_rhs_batch_dimensions(i);
-+                }
-+                PrecisionConfig precision_config;
-+                precision_config.add_operand_precision(
-+                    PrecisionConfig::DEFAULT);
-+                precision_config.add_operand_precision(
-+                    PrecisionConfig::DEFAULT);
-+
-+                replacement =
-+                    computation->AddInstruction(HloInstruction::CreateDot(
-+                        inst->shape(), concat, concat_weights, dnums,
-+                        precision_config));
-+                TF_CHECK_OK(computation->ReplaceInstruction(inst, replacement));
-+                changed = true;
-+                continue;
-+              } else {
-+                bool matched_type = true;
-+                Literal weights_literal;
-+                std::vector<float> w_f32;
-+                std::vector<double> w_f64;
-+                std::vector<bfloat16> w_bf16;
-+                std::vector<half> w_f16;
-+                std::vector<int32_t> w_s32;
-+                std::vector<int64_t> w_s64;
-+                for (auto& ws : folded) {
-+                  w_f32.push_back(static_cast<float>(ws.weight));
-+                  w_f64.push_back(static_cast<double>(ws.weight));
-+                  w_bf16.push_back(static_cast<bfloat16>(ws.weight));
-+                  w_f16.push_back(static_cast<half>(ws.weight));
-+                  w_s32.push_back(static_cast<int32_t>(ws.weight));
-+                  w_s64.push_back(static_cast<int64_t>(ws.weight));
-+                }
-+                switch (ptype) {
-+                  case F32:
-+                    weights_literal = LiteralUtil::CreateR1<float>(w_f32);
-+                    break;
-+                  case F64:
-+                    weights_literal = LiteralUtil::CreateR1<double>(w_f64);
-+                    break;
-+                  case BF16:
-+                    weights_literal = LiteralUtil::CreateR1<bfloat16>(w_bf16);
-+                    break;
-+                  case F16:
-+                    weights_literal = LiteralUtil::CreateR1<half>(w_f16);
-+                    break;
-+                  case S32:
-+                    weights_literal = LiteralUtil::CreateR1<int32_t>(w_s32);
-+                    break;
-+                  case S64:
-+                    weights_literal = LiteralUtil::CreateR1<int64_t>(w_s64);
-+                    break;
-+                  default:
-+                    matched_type = false;
-+                }
-+                if (matched_type) {
-+                  HloInstruction* weights = computation->AddInstruction(
-+                      HloInstruction::CreateConstant(
-+                          std::move(weights_literal)));
-+                  DotDimensionNumbers dnums;
-+                  dnums.add_lhs_contracting_dimensions(0);
-+                  dnums.add_rhs_contracting_dimensions(0);
-+                  PrecisionConfig precision_config;
-+                  precision_config.add_operand_precision(
-+                      PrecisionConfig::DEFAULT);
-+                  precision_config.add_operand_precision(
-+                      PrecisionConfig::DEFAULT);
-+
-+                  replacement = computation->AddInstruction(
-+                      HloInstruction::CreateDot(inst->shape(), concat, weights,
-+                                                dnums, precision_config));
-+                  TF_CHECK_OK(
-+                      computation->ReplaceInstruction(inst, replacement));
-+                  changed = true;
-+                  continue;
-+                }
-+              }
-+            }
-+          }
-+        }
-+      }
-+    }
-+
 +    int64_t dim = -1;
 +    int64_t window_dilation = -1;
 +    HloInstruction* new_base_op = nullptr;
-+
-+    // Pattern 1: add(pad, pad)
-+    if (lhs->opcode() == HloOpcode::kPad && rhs->opcode() == HloOpcode::kPad) {
-+      if (lhs->operand(0) == rhs->operand(0) &&
-+          lhs->operand(1)->Identical(*rhs->operand(1))) {  // Same padding value
-+        const PaddingConfig& l_pad = lhs->padding_config();
-+        const PaddingConfig& r_pad = rhs->padding_config();
-+
-+        bool matched = true;
-+        for (int i = 0; i < l_pad.dimensions_size(); ++i) {
-+          if (l_pad.dimensions(i).interior_padding() != 0 ||
-+              r_pad.dimensions(i).interior_padding() != 0) {
-+            matched = false;
-+            break;
-+          }
-+          int64_t l_low = l_pad.dimensions(i).edge_padding_low();
-+          int64_t l_high = l_pad.dimensions(i).edge_padding_high();
-+          int64_t r_low = r_pad.dimensions(i).edge_padding_low();
-+          int64_t r_high = r_pad.dimensions(i).edge_padding_high();
-+
-+          if (l_low == r_low && l_high == r_high) {
-+            continue;  // Same padding in this dim
-+          }
-+
-+          if (dim != -1) {
-+            matched = false;  // More than 1 dimension differs
-+            break;
-+          }
-+
-+          if (l_low > 0 && l_low == r_high && l_high == 0 && r_low == 0) {
-+            dim = i;
-+            window_dilation = l_low;
-+          } else if (r_low > 0 && r_low == l_high && r_high == 0 &&
-+                     l_low == 0) {
-+            dim = i;
-+            window_dilation = r_low;
-+          } else {
-+            matched = false;
-+            break;
-+          }
-+        }
-+
-+        if (matched && dim != -1) {
-+          PaddingConfig new_pad_config = l_pad;
-+          new_pad_config.mutable_dimensions(dim)->set_edge_padding_low(
-+              window_dilation);
-+          new_pad_config.mutable_dimensions(dim)->set_edge_padding_high(
-+              window_dilation);
-+          Shape pad_shape = lhs->shape();
-+          pad_shape.set_dimensions(
-+              dim,
-+              lhs->operand(0)->shape().dimensions(dim) + 2 * window_dilation);
-+          new_base_op = computation->AddInstruction(HloInstruction::CreatePad(
-+              pad_shape, lhs->mutable_operand(0), lhs->mutable_operand(1),
-+              new_pad_config));
-+        }
-+      }
-+    }
-+
-+    // Pattern 2: add(slice, slice)
-+    if (!new_base_op && lhs->opcode() == HloOpcode::kSlice &&
-+        rhs->opcode() == HloOpcode::kSlice) {
-+      if (lhs->operand(0) == rhs->operand(0) &&
-+          absl::c_all_of(lhs->slice_strides(),
-+                         [](int64_t s) { return s == 1; }) &&
-+          absl::c_all_of(rhs->slice_strides(),
-+                         [](int64_t s) { return s == 1; })) {
-+        int rank = lhs->shape().dimensions_size();
-+        bool matched = true;
-+        std::vector<int64_t> new_starts(rank);
-+        std::vector<int64_t> new_limits(rank);
-+
-+        for (int i = 0; i < rank; ++i) {
-+          if (lhs->slice_starts(i) == rhs->slice_starts(i) &&
-+              lhs->slice_limits(i) == rhs->slice_limits(i)) {
-+            new_starts[i] = lhs->slice_starts(i);
-+            new_limits[i] = lhs->slice_limits(i);
-+          } else if (dim != -1) {
-+            matched = false;
-+            break;
-+          } else {
-+            int64_t l_start = lhs->slice_starts(i);
-+            int64_t r_start = rhs->slice_starts(i);
-+            int64_t l_limit = lhs->slice_limits(i);
-+            int64_t r_limit = rhs->slice_limits(i);
-+            dim = i;
-+            new_starts[i] = std::min(l_start, r_start);
-+            new_limits[i] = std::max(l_limit, r_limit);
-+            window_dilation = std::abs(l_start - r_start);
-+            if (window_dilation == 0 ||
-+                (l_limit - l_start != r_limit - r_start)) {
-+              matched = false;
-+              break;
-+            }
-+          }
-+        }
-+
-+        if (matched && dim != -1) {
-+          std::vector<int64_t> strides(rank, 1);
-+          Shape slice_shape = lhs->shape();
-+          slice_shape.set_dimensions(dim, new_limits[dim] - new_starts[dim]);
-+          new_base_op = computation->AddInstruction(
-+              HloInstruction::CreateSlice(slice_shape, lhs->mutable_operand(0),
-+                                          new_starts, new_limits, strides));
-+        }
-+      }
-+    }
++    int64_t current_window_size = 2;
 +
 +    // Pattern 3: add(reduce_window, slice)
-+    int64_t current_window_size =
-+        2;  // For the first transformation, size becomes 2
 +    if (!new_base_op && (lhs->opcode() == HloOpcode::kReduceWindow ||
 +                         rhs->opcode() == HloOpcode::kReduceWindow)) {
-+      // Find which one is reduce_window and which is slice/pad
 +      HloInstruction* rw =
 +          (lhs->opcode() == HloOpcode::kReduceWindow) ? lhs : rhs;
 +      HloInstruction* other =
 +          (lhs->opcode() == HloOpcode::kReduceWindow) ? rhs : lhs;
 +
++      bool other_valid = other->opcode() == HloOpcode::kSlice ||
++                         (other->opcode() == HloOpcode::kPad &&
++                          other->operand(1)->opcode() == HloOpcode::kConstant);
++      bool rw_valid =
++          rw->operand(0)->opcode() == HloOpcode::kSlice ||
++          (rw->operand(0)->opcode() == HloOpcode::kPad &&
++           rw->operand(0)->operand(1)->opcode() == HloOpcode::kConstant);
++
 +      // Make sure the reducer is the same!
 +      if (rw->to_apply()->root_instruction()->opcode() == inst->opcode() &&
-+          other->opcode() == HloOpcode::kSlice &&
-+          rw->operand(0)->opcode() == HloOpcode::kSlice) {
++          other_valid && rw_valid) {
 +        HloInstruction* rw_slice = rw->mutable_operand(0);
-+        if (rw_slice->operand(0) == other->operand(0) &&
-+            absl::c_all_of(rw_slice->slice_strides(),
-+                           [](int64_t s) { return s == 1; }) &&
-+            absl::c_all_of(other->slice_strides(),
-+                           [](int64_t s) { return s == 1; })) {
-+          int rank = rw_slice->shape().dimensions_size();
-+          bool matched = true;
-+          std::vector<int64_t> new_starts(rank);
-+          std::vector<int64_t> new_limits(rank);
++        if (rw_slice->opcode() == other->opcode() &&
++            rw_slice->operand(0) == other->operand(0)) {
++          bool valid_strides = true;
++          if (rw_slice->opcode() == HloOpcode::kSlice) {
++            valid_strides = absl::c_all_of(rw_slice->slice_strides(),
++                                           [](int64_t s) { return s == 1; }) &&
++                            absl::c_all_of(other->slice_strides(),
++                                           [](int64_t s) { return s == 1; });
++          } else {
++            valid_strides = rw_slice->operand(1)->Identical(*other->operand(1));
++          }
++          if (valid_strides) {
++            int rank = rw_slice->shape().dimensions_size();
++            bool matched = true;
++            std::vector<int64_t> new_starts(rank);
++            std::vector<int64_t> new_limits(rank);
 +
-+          for (int i = 0; i < rank; ++i) {
-+            if (rw_slice->slice_starts(i) == other->slice_starts(i) &&
-+                rw_slice->slice_limits(i) == other->slice_limits(i)) {
-+              new_starts[i] = rw_slice->slice_starts(i);
-+              new_limits[i] = rw_slice->slice_limits(i);
-+            } else if (dim != -1) {
-+              matched = false;
-+              break;
-+            } else {
-+              int64_t rw_start = rw_slice->slice_starts(i);
-+              int64_t o_start = other->slice_starts(i);
-+              int64_t rw_limit = rw_slice->slice_limits(i);
-+              int64_t o_limit = other->slice_limits(i);
-+              dim = i;
++            auto get_start = [&](HloInstruction* op, int d) -> int64_t {
++              if (op->opcode() == HloOpcode::kSlice) return op->slice_starts(d);
++              return -op->padding_config().dimensions(d).edge_padding_low();
++            };
++            auto get_limit = [&](HloInstruction* op, int d) -> int64_t {
++              if (op->opcode() == HloOpcode::kSlice) return op->slice_limits(d);
++              return op->operand(0)->shape().dimensions(d) +
++                     op->padding_config().dimensions(d).edge_padding_high();
++            };
++            auto get_interior = [&](HloInstruction* op, int d) -> int64_t {
++              if (op->opcode() == HloOpcode::kSlice) return 0;
++              return op->padding_config().dimensions(d).interior_padding();
++            };
 +
-+              int64_t D = rw->window().dimensions(dim).window_dilation();
-+              int64_t size = rw->window().dimensions(dim).size();
-+
-+              bool is_append =
-+                  (o_start == rw_start + D * size) && (o_limit == rw_limit + D);
-+              bool is_prepend =
-+                  (rw_start == o_start + D) && (rw_limit == o_limit + D * size);
-+
-+              if (is_append || is_prepend) {
-+                window_dilation = D;
-+              } else {
++            for (int i = 0; i < rank; ++i) {
++              if (get_interior(rw_slice, i) != 0 ||
++                  get_interior(other, i) != 0) {
 +                matched = false;
 +                break;
 +              }
++              if (get_start(rw_slice, i) == get_start(other, i) &&
++                  get_limit(rw_slice, i) == get_limit(other, i)) {
++                new_starts[i] = get_start(rw_slice, i);
++                new_limits[i] = get_limit(rw_slice, i);
++              } else if (dim != -1) {
++                matched = false;
++                break;
++              } else {
++                int64_t rw_start = get_start(rw_slice, i);
++                int64_t o_start = get_start(other, i);
++                int64_t rw_limit = get_limit(rw_slice, i);
++                int64_t o_limit = get_limit(other, i);
++                dim = i;
 +
-+              new_starts[i] = std::min(rw_start, o_start);
-+              new_limits[i] = std::max(rw_limit, o_limit);
-+              current_window_size = size + 1;
++                int64_t D = rw->window().dimensions(dim).window_dilation();
++                int64_t size = rw->window().dimensions(dim).size();
++
++                bool is_append = (o_start == rw_start + D * size) &&
++                                 (o_limit == rw_limit + D);
++                bool is_prepend = (rw_start == o_start + D) &&
++                                  (rw_limit == o_limit + D * size);
++
++                if (is_append || is_prepend) {
++                  window_dilation = D;
++                } else {
++                  matched = false;
++                  break;
++                }
++
++                new_starts[i] = std::min(rw_start, o_start);
++                new_limits[i] = std::max(rw_limit, o_limit);
++                current_window_size = size + 1;
++              }
 +            }
-+          }
-+          if (matched && dim != -1) {
-+            std::vector<int64_t> strides(rank, 1);
-+            Shape slice_shape = rw_slice->shape();
-+            slice_shape.set_dimensions(dim, new_limits[dim] - new_starts[dim]);
-+            new_base_op =
-+                computation->AddInstruction(HloInstruction::CreateSlice(
-+                    slice_shape, rw_slice->mutable_operand(0), new_starts,
-+                    new_limits, strides));
++            if (matched && dim != -1) {
++              if (rw_slice->opcode() == HloOpcode::kSlice) {
++                std::vector<int64_t> strides(rank, 1);
++                Shape slice_shape = rw_slice->shape();
++                slice_shape.set_dimensions(dim,
++                                           new_limits[dim] - new_starts[dim]);
++                new_base_op =
++                    computation->AddInstruction(HloInstruction::CreateSlice(
++                        slice_shape, rw_slice->mutable_operand(0), new_starts,
++                        new_limits, strides));
++              } else {
++                PaddingConfig new_pad_config = rw_slice->padding_config();
++                for (int d = 0; d < rank; ++d) {
++                  new_pad_config.mutable_dimensions(d)->set_edge_padding_low(
++                      -new_starts[d]);
++                  new_pad_config.mutable_dimensions(d)->set_edge_padding_high(
++                      new_limits[d] -
++                      rw_slice->operand(0)->shape().dimensions(d));
++                  new_pad_config.mutable_dimensions(d)->set_interior_padding(0);
++                }
++                Shape pad_shape = rw_slice->shape();
++                pad_shape.set_dimensions(dim,
++                                         new_limits[dim] - new_starts[dim]);
++                new_base_op =
++                    computation->AddInstruction(HloInstruction::CreatePad(
++                        pad_shape, rw_slice->mutable_operand(0),
++                        rw_slice->mutable_operand(1), new_pad_config));
++              }
++            }
 +          }
 +        }
 +      }
 +    }
 +
 +    if (new_base_op) {
-+      HloComputation* reducer =
-+          inst->opcode() == ((lhs->opcode() == HloOpcode::kReduceWindow)
-+                                 ? lhs->to_apply()->root_instruction()->opcode()
-+                                 : inst->opcode())
-+              ? GetOrCreateReducer(computation->parent(), inst->opcode(),
-+                                   inst->shape().element_type())
-+              : nullptr;
-+      HloInstruction* init_val = CreateInitValue(computation, inst->opcode(),
-+                                                 inst->shape().element_type());
-+      if (!init_val || !reducer) continue;
++      auto opcode = (lhs->opcode() == HloOpcode::kReduceWindow)
++                        ? lhs->to_apply()->root_instruction()->opcode()
++                        : inst->opcode();
 +
-+      int rank = new_base_op->shape().dimensions_size();
-+      Window window = window_util::MakeWindow(std::vector<int64_t>(rank, 1));
-+      window.mutable_dimensions(dim)->set_size(current_window_size);
-+      window.mutable_dimensions(dim)->set_window_dilation(window_dilation);
-+
-+      HloInstruction* rw =
-+          computation->AddInstruction(HloInstruction::CreateReduceWindow(
-+              inst->shape(), new_base_op, init_val, window, reducer));
++      TF_ASSIGN_OR_RETURN(
++          auto rw,
++          CreateReduceWindow(computation, inst->shape(), new_base_op, opcode,
++                             dim, current_window_size, window_dilation));
 +
 +      TF_RETURN_IF_ERROR(inst->ReplaceAllUsesWith(rw));
 +      changed = true;
++      continue;
++    }
++
++    if (inst->opcode() == HloOpcode::kSubtract ||
++        inst->opcode() == HloOpcode::kAdd) {
++      std::vector<WeightedSlice> combined_slices;
++
++      ExtractWeightedSlices(inst, combined_slices);
++      {
++        CHECK_GT(combined_slices.size(), 0);
++        Shape slice_shape = combined_slices[0].slice->shape();
++        int64_t rank = slice_shape.dimensions_size();
++
++        bool any_array_weights = false;
++        bool any_literal_weights = false;
++        bool all_unit_stride_slices_on_same_operand = true;
++        bool all_pads_on_same_operand = true;
++        for (auto& ws : combined_slices) {
++          if (ws.array_weight != nullptr) {
++            any_array_weights = true;
++          } else {
++            any_literal_weights = true;
++          }
++          CHECK_EQ(slice_shape, ws.slice->shape());
++          // TODO here down
++          if (ws.slice->opcode() != HloOpcode::kSlice ||
++              absl::c_any_of(ws.slice->slice_strides(),
++                             [](int64_t s) { return s != 1; })) {
++            all_unit_stride_slices_on_same_operand = false;
++          } else if (all_unit_stride_slices_on_same_operand &&
++                     ws.slice->operand(0) !=
++                         combined_slices[0].slice->operand(0)) {
++            all_unit_stride_slices_on_same_operand = false;
++          }
++
++          if (ws.slice->opcode() != HloOpcode::kPad ||
++              ws.slice->operand(1)->opcode() != HloOpcode::kConstant) {
++            all_pads_on_same_operand = false;
++          } else if (all_pads_on_same_operand &&
++                     (ws.slice->operand(0) !=
++                          combined_slices[0].slice->operand(0) ||
++                      !ws.slice->operand(1)->Identical(
++                          *combined_slices[0].slice->operand(1)))) {
++            all_pads_on_same_operand = false;
++          }
++
++          if (ws.array_weight) {
++            CHECK_EQ(slice_shape, ws.array_weight->shape());
++            // Canonicalize order for consistent folding
++            if (CompareInstruction(ws.array_weight, ws.slice)) {
++              std::swap(ws.slice, ws.array_weight);
++            }
++          }
++        }
++
++        // Sort to group identical (slice, array_weight) pairs
++        absl::c_sort(combined_slices, CompareWeightedSlices);
++
++        std::vector<WeightedSlice> folded;
++        for (auto& ws : combined_slices) {
++          if (folded.empty()) {
++            folded.push_back(std::move(ws));
++          } else {
++            if (ws.slice == folded.back().slice &&
++                ws.array_weight == folded.back().array_weight) {
++              HloEvaluator evaluator;
++              folded.back().weight =
++                  evaluator
++                      .EvaluateElementwiseBinaryOp(
++                          HloOpcode::kAdd, folded.back().weight, ws.weight)
++                      .value();
++            } else {
++              folded.push_back(std::move(ws));
++            }
++          }
++        }
++
++        PrimitiveType ptype = inst->shape().element_type();
++        Literal zero = LiteralUtil::Zero(ptype);
++        Literal one = LiteralUtil::One(ptype);
++        Literal minus_one =
++            HloEvaluator{}
++                .EvaluateElementwiseUnaryOp(HloOpcode::kNegate, one)
++                .value();
++
++        folded.erase(std::remove_if(folded.begin(), folded.end(),
++                                    [&](const WeightedSlice& ws) {
++                                      return ws.weight == zero;
++                                    }),
++                     folded.end());
++
++        if (folded.empty()) {
++          auto zero_replacement = computation->AddInstruction(
++              HloInstruction::CreateConstant(LiteralUtil::Zero(ptype)));
++          auto broadcasted_zero =
++              computation->AddInstruction(HloInstruction::CreateBroadcast(
++                  inst->shape(), zero_replacement, {}));
++          TF_CHECK_OK(computation->ReplaceInstruction(inst, broadcasted_zero));
++          changed = true;
++          continue;
++        }
++
++        if (folded.size() == 1) {
++          if (folded[0].weight == one) {
++            TF_CHECK_OK(computation->ReplaceInstruction(inst, folded[0].slice));
++            changed = true;
++            continue;
++          }
++          if (folded[0].array_weight != nullptr) {
++            HloInstruction* replacement =
++                computation->AddInstruction(HloInstruction::CreateBinary(
++                    inst->shape(), HloOpcode::kMultiply, folded[0].slice,
++                    folded[0].array_weight));
++            TF_CHECK_OK(computation->ReplaceInstruction(inst, replacement));
++            changed = true;
++            continue;
++          }
++          auto literal_replacement = computation->AddInstruction(
++              HloInstruction::CreateConstant(std::move(folded[0].weight)));
++          auto broadcasted =
++              computation->AddInstruction(HloInstruction::CreateBroadcast(
++                  inst->shape(), literal_replacement, {}));
++          HloInstruction* replacement = computation->AddInstruction(
++              HloInstruction::CreateBinary(inst->shape(), HloOpcode::kMultiply,
++                                           folded[0].slice, broadcasted));
++          TF_CHECK_OK(computation->ReplaceInstruction(inst, replacement));
++          changed = true;
++          continue;
++        }
++
++        // Pattern 2: add(slice, slice, ..., slice)
++        bool all_weights_one = true;
++        for (const auto& ws : folded) {
++          if (ws.weight != one) {
++            all_weights_one = false;
++            break;
++          }
++        }
++
++        if ((all_unit_stride_slices_on_same_operand ||
++             all_pads_on_same_operand) &&
++            !any_array_weights && all_weights_one && folded.size() >= 2) {
++          int rank = folded[0].slice->shape().dimensions_size();
++          bool matched = true;
++          std::vector<int64_t> new_starts(rank);
++          std::vector<int64_t> new_limits(rank);
++
++          int64_t dim = -1;
++          int64_t window_dilation = -1;
++          int64_t expected_size = -1;
++
++          auto get_start = [&](HloInstruction* op, int d) -> int64_t {
++            if (op->opcode() == HloOpcode::kSlice) return op->slice_starts(d);
++            return -op->padding_config().dimensions(d).edge_padding_low();
++          };
++          auto get_limit = [&](HloInstruction* op, int d) -> int64_t {
++            if (op->opcode() == HloOpcode::kSlice) return op->slice_limits(d);
++            return op->operand(0)->shape().dimensions(d) +
++                   op->padding_config().dimensions(d).edge_padding_high();
++          };
++          auto get_interior = [&](HloInstruction* op, int d) -> int64_t {
++            if (op->opcode() == HloOpcode::kSlice) return 0;
++            return op->padding_config().dimensions(d).interior_padding();
++          };
++
++          for (int i = 0; i < rank; ++i) {
++            bool all_same = true;
++            for (size_t j = 1; j < folded.size(); ++j) {
++              if (get_start(folded[j].slice, i) !=
++                      get_start(folded[0].slice, i) ||
++                  get_limit(folded[j].slice, i) !=
++                      get_limit(folded[0].slice, i) ||
++                  get_interior(folded[j].slice, i) !=
++                      get_interior(folded[0].slice, i) ||
++                  get_interior(folded[j].slice, i) != 0) {
++                all_same = false;
++                break;
++              }
++            }
++            if (get_interior(folded[0].slice, i) != 0) {
++              matched = false;
++              break;
++            }
++            if (all_same) {
++              new_starts[i] = get_start(folded[0].slice, i);
++              new_limits[i] = get_limit(folded[0].slice, i);
++            } else if (dim != -1) {
++              matched = false;
++              break;
++            } else {
++              int64_t first_start = get_start(folded[0].slice, i);
++              int64_t first_limit = get_limit(folded[0].slice, i);
++              expected_size = first_limit - first_start;
++              dim = i;
++
++              window_dilation =
++                  get_start(folded[1].slice, i) - get_start(folded[0].slice, i);
++              if (window_dilation <= 0) {
++                matched = false;
++                break;
++              }
++
++              for (size_t j = 0; j < folded.size(); ++j) {
++                int64_t s = get_start(folded[j].slice, i);
++                int64_t l = get_limit(folded[j].slice, i);
++                if (l - s != expected_size ||
++                    s != first_start + j * window_dilation) {
++                  matched = false;
++                  break;
++                }
++              }
++
++              if (matched) {
++                new_starts[i] = first_start;
++                new_limits[i] = get_limit(folded.back().slice, i);
++              }
++            }
++          }
++
++          if (matched && dim != -1) {
++            HloInstruction* new_base_op = nullptr;
++            if (all_unit_stride_slices_on_same_operand) {
++              std::vector<int64_t> strides(rank, 1);
++              Shape slice_shape = folded[0].slice->shape();
++              slice_shape.set_dimensions(dim,
++                                         new_limits[dim] - new_starts[dim]);
++              new_base_op =
++                  computation->AddInstruction(HloInstruction::CreateSlice(
++                      slice_shape, folded[0].slice->mutable_operand(0),
++                      new_starts, new_limits, strides));
++            } else {
++              PaddingConfig new_pad_config = folded[0].slice->padding_config();
++              for (int d = 0; d < rank; ++d) {
++                new_pad_config.mutable_dimensions(d)->set_edge_padding_low(
++                    -new_starts[d]);
++                new_pad_config.mutable_dimensions(d)->set_edge_padding_high(
++                    new_limits[d] -
++                    folded[0].slice->operand(0)->shape().dimensions(d));
++                new_pad_config.mutable_dimensions(d)->set_interior_padding(0);
++              }
++              Shape pad_shape = folded[0].slice->shape();
++              pad_shape.set_dimensions(
++                  dim, folded[0].slice->shape().dimensions(dim) +
++                           (folded.size() - 1) * window_dilation);
++              new_base_op =
++                  computation->AddInstruction(HloInstruction::CreatePad(
++                      pad_shape, folded[0].slice->mutable_operand(0),
++                      folded[0].slice->mutable_operand(1), new_pad_config));
++            }
++            int64_t current_window_size = folded.size();
++            TF_ASSIGN_OR_RETURN(
++                HloInstruction * replacement,
++                CreateReduceWindow(computation, inst->shape(), new_base_op,
++                                   HloOpcode::kAdd, dim, current_window_size,
++                                   window_dilation));
++            TF_CHECK_OK(computation->ReplaceInstruction(inst, replacement));
++            changed = true;
++            continue;
++          }
++        }
++
++        Shape reshape_shape = slice_shape;
++        std::vector<int64_t> concat_dims = {1};
++        for (int64_t d : reshape_shape.dimensions()) concat_dims.push_back(d);
++        Shape new_shape =
++            ShapeUtil::MakeShape(reshape_shape.element_type(), concat_dims);
++
++        std::vector<HloInstruction*> reshaped_slices;
++        std::vector<HloInstruction*> reshaped_array_weights;
++
++        for (auto& ws : folded) {
++          reshaped_slices.push_back(computation->AddInstruction(
++              HloInstruction::CreateReshape(new_shape, ws.slice)));
++          if (any_array_weights) {
++            HloInstruction* aw = ws.array_weight;
++            if (!aw) {
++              HloInstruction* scalar = computation->AddInstruction(
++                  HloInstruction::CreateConstant(ws.weight.Clone()));
++              aw = computation->AddInstruction(
++                  HloInstruction::CreateBroadcast(slice_shape, scalar, {}));
++            } else if (ws.weight != one) {
++              HloInstruction* scalar = computation->AddInstruction(
++                  HloInstruction::CreateConstant(ws.weight.Clone()));
++              HloInstruction* weight = computation->AddInstruction(
++                  HloInstruction::CreateBroadcast(aw->shape(), scalar, {}));
++              aw = computation->AddInstruction(HloInstruction::CreateBinary(
++                  aw->shape(), HloOpcode::kMultiply, aw, weight));
++            }
++            reshaped_array_weights.push_back(computation->AddInstruction(
++                HloInstruction::CreateReshape(new_shape, aw)));
++          }
++        }
++
++        Shape concat_shape = new_shape;
++        concat_shape.set_dimensions(0, folded.size());
++        HloInstruction* concat =
++            computation->AddInstruction(HloInstruction::CreateConcatenate(
++                concat_shape, reshaped_slices, 0));
++
++        HloInstruction* replacement = nullptr;
++
++        if (any_array_weights) {
++          HloInstruction* concat_weights =
++              computation->AddInstruction(HloInstruction::CreateConcatenate(
++                  concat_shape, reshaped_array_weights, 0));
++
++          DotDimensionNumbers dnums;
++          dnums.add_lhs_contracting_dimensions(0);
++          dnums.add_rhs_contracting_dimensions(0);
++          for (int i = 1; i <= rank; ++i) {
++            dnums.add_lhs_batch_dimensions(i);
++            dnums.add_rhs_batch_dimensions(i);
++          }
++          PrecisionConfig precision_config;
++          precision_config.add_operand_precision(PrecisionConfig::DEFAULT);
++          precision_config.add_operand_precision(PrecisionConfig::DEFAULT);
++
++          replacement = computation->AddInstruction(HloInstruction::CreateDot(
++              inst->shape(), concat, concat_weights, dnums, precision_config));
++          TF_CHECK_OK(computation->ReplaceInstruction(inst, replacement));
++          changed = true;
++          continue;
++        } else {
++          Literal weights_literal = primitive_util::PrimitiveTypeSwitch<
++              Literal>(
++              [&](auto primitive_type_constant) -> Literal {
++                if constexpr (primitive_util::IsArrayType(
++                                  primitive_type_constant)) {
++                  if constexpr (primitive_type_constant == PRED) {
++                    std::unique_ptr<bool[]> bool_vals(new bool[folded.size()]);
++                    for (size_t i = 0; i < folded.size(); ++i) {
++                      bool_vals[i] = folded[i].weight.GetFirstElement<bool>();
++                    }
++                    return LiteralUtil::CreateR1<bool>(
++                        absl::Span<const bool>(bool_vals.get(), folded.size()));
++                  } else {
++                    using NativeT =
++                        primitive_util::NativeTypeOf<primitive_type_constant>;
++                    std::vector<NativeT> vals;
++                    vals.reserve(folded.size());
++                    for (auto& ws : folded) {
++                      vals.push_back(ws.weight.GetFirstElement<NativeT>());
++                    }
++                    return LiteralUtil::CreateR1<NativeT>(vals);
++                  }
++                }
++                LOG(FATAL) << "Unsupported array type";
++              },
++              ptype);
++
++          HloInstruction* weights = computation->AddInstruction(
++              HloInstruction::CreateConstant(std::move(weights_literal)));
++          DotDimensionNumbers dnums;
++          dnums.add_lhs_contracting_dimensions(0);
++          dnums.add_rhs_contracting_dimensions(0);
++          PrecisionConfig precision_config;
++          precision_config.add_operand_precision(PrecisionConfig::DEFAULT);
++          precision_config.add_operand_precision(PrecisionConfig::DEFAULT);
++
++          replacement = computation->AddInstruction(HloInstruction::CreateDot(
++              inst->shape(), concat, weights, dnums, precision_config));
++          TF_CHECK_OK(computation->ReplaceInstruction(inst, replacement));
++          changed = true;
++          continue;
++        }
++      }
 +    }
 +  }
 +
@@ -893,7 +969,8 @@ index 0000000000..807dd96e07
 +             ++it) {
 +          HloInstruction* dce_inst = *it;
 +          if (dce_inst->user_count() == 0 && !dce_inst->HasSideEffect() &&
-+              computation->root_instruction() != dce_inst) {
++              computation->root_instruction() != dce_inst &&
++              computation->IsSafelyRemovable(dce_inst)) {
 +            TF_RETURN_IF_ERROR(computation->RemoveInstruction(dce_inst));
 +            dce_changed = true;
 +          }
@@ -956,10 +1033,10 @@ index 0000000000..716c098021
 +#endif  // XLA_HLO_TRANSFORMS_SIMPLIFIERS_RECOGNIZE_REDUCE_WINDOW_H_
 diff --git a/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc b/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc
 new file mode 100644
-index 0000000000..3a040883df
+index 0000000000..a23e1591c0
 --- /dev/null
 +++ b/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,511 @@
 +/* Copyright 2025 The OpenXLA Authors.
 +
 +Licensed under the Apache License, Version 2.0 (the "License");
@@ -1085,6 +1162,66 @@ index 0000000000..3a040883df
 +)");
 +}
 +
++TEST_F(RecognizeReduceWindowTest, AddChainedPads) {
++  const absl::string_view hlo_string = R"(
++HloModule AddChainedPads
++
++ENTRY main {
++  x = f32[10] parameter(0)
++  pad_val = f32[] constant(0.0)
++  pad_1 = f32[14] pad(x, pad_val), padding=4_0
++  pad_2 = f32[14] pad(x, pad_val), padding=2_2
++  pad_3 = f32[14] pad(x, pad_val), padding=0_4
++  add_1 = f32[14] add(pad_1, pad_2)
++  ROOT add_2 = f32[14] add(add_1, pad_3)
++}
++)";
++  CheckRecognizeReduceWindow(hlo_string, R"(
++// CHECK: %[[REDUCER_NAME:.*]] ({{.*}}) -> f32[] {
++// CHECK:   [[LHS:%.*]] = f32[] parameter(0)
++// CHECK:   [[RHS:%.*]] = f32[] parameter(1)
++// CHECK:   ROOT {{.*}} = f32[] add([[LHS]], [[RHS]])
++// CHECK: }
++// CHECK: ENTRY %main ({{.*}}: f32[10]) -> f32[14] {
++// CHECK:   [[X:%.*]] = f32[10]{0} parameter(0)
++// CHECK:   [[PAD_VAL:%.*]] = f32[] constant(0)
++// CHECK:   [[PAD_UNION:%.*]] = f32[18]{0} pad([[X]], [[PAD_VAL]]), padding=4_4
++// CHECK:   [[ZERO:%.*]] = f32[] constant(0)
++// CHECK:   ROOT {{.*}} = f32[14]{0} reduce-window([[PAD_UNION]], [[ZERO]]), window={size=3 rhs_dilate=2}, to_apply=%[[REDUCER_NAME]]
++// CHECK: }
++)");
++}
++
++TEST_F(RecognizeReduceWindowTest, AddFourChainedSlices) {
++  const absl::string_view hlo_string = R"(
++HloModule AddFourChainedSlices
++
++ENTRY main {
++  x = f32[10] parameter(0)
++  slice_1 = f32[4] slice(x), slice={[0:4]}
++  slice_2 = f32[4] slice(x), slice={[2:6]}
++  slice_3 = f32[4] slice(x), slice={[4:8]}
++  slice_4 = f32[4] slice(x), slice={[6:10]}
++  add_1 = f32[4] add(slice_1, slice_2)
++  add_2 = f32[4] add(add_1, slice_3)
++  ROOT add_3 = f32[4] add(add_2, slice_4)
++}
++)";
++  CheckRecognizeReduceWindow(hlo_string, R"(
++// CHECK: %[[REDUCER_NAME:.*]] ({{.*}}) -> f32[] {
++// CHECK:   [[LHS:%.*]] = f32[] parameter(0)
++// CHECK:   [[RHS:%.*]] = f32[] parameter(1)
++// CHECK:   ROOT {{.*}} = f32[] add([[LHS]], [[RHS]])
++// CHECK: }
++// CHECK: ENTRY %main ({{.*}}: f32[10]) -> f32[4] {
++// CHECK:   [[X:%.*]] = f32[10]{0} parameter(0)
++// CHECK:   [[SLICE:%.*]] = f32[10]{0} slice([[X]]), slice={[0:10]}
++// CHECK:   [[ZERO:%.*]] = f32[] constant(0)
++// CHECK:   ROOT {{.*}} = f32[4]{0} reduce-window([[SLICE]], [[ZERO]]), window={size=4 rhs_dilate=2}, to_apply=%[[REDUCER_NAME]]
++// CHECK: }
++)");
++}
++
 +TEST_F(RecognizeReduceWindowTest, AddChainedSlices) {
 +  const absl::string_view hlo_string = R"(
 +HloModule AddChainedSlices
@@ -1163,6 +1300,47 @@ index 0000000000..3a040883df
 +// CHECK:   [[CONCAT:%.*]] = f32[3,8]{1,0} concatenate([[RESHAPE_1]], [[RESHAPE_0]], [[RESHAPE_2]]), dimensions={0}
 +// CHECK:   [[CONSTANT:%.*]] = f32[3]{0} constant({1, 1, -1})
 +// CHECK:   ROOT {{.*}} = f32[8]{0} dot([[CONCAT]], [[CONSTANT]]), lhs_contracting_dims={0}, rhs_contracting_dims={0}
++// CHECK: }
++)");
++}
++
++TEST_F(RecognizeReduceWindowTest, HeterogeneousConvolutionToDot) {
++  const absl::string_view hlo_string = R"(
++HloModule HeterogeneousConvolutionToDot
++
++ENTRY main {
++  x = f32[10] parameter(0)
++  w1 = f32[10] parameter(1)
++  x_1 = f32[8] slice(x), slice={[0:8]}
++  w_1 = f32[8] slice(w1), slice={[0:8]}
++  m_1 = f32[8] multiply(x_1, w_1)
++  
++  y = f32[10] parameter(2)
++  w2 = f32[10] parameter(3)
++  x_2 = f32[8] slice(y), slice={[2:10]}
++  w_2 = f32[8] slice(w2), slice={[2:10]}
++  m_2 = f32[8] multiply(x_2, w_2)
++  
++  ROOT add = f32[8] add(m_1, m_2)
++}
++)";
++  CheckRecognizeReduceWindow(hlo_string, R"(
++// CHECK: ENTRY %main ({{.*}}: f32[10], {{.*}}: f32[10], {{.*}}: f32[10], {{.*}}: f32[10]) -> f32[8] {
++// CHECK:   [[X:%.*]] = f32[10]{0} parameter(0)
++// CHECK:   [[SLICE_X1:%.*]] = f32[8]{0} slice([[X]]), slice={[0:8]}
++// CHECK:   [[RESHAPE_X1:%.*]] = f32[1,8]{1,0} reshape([[SLICE_X1]])
++// CHECK:   [[Y:%.*]] = f32[10]{0} parameter(2)
++// CHECK:   [[SLICE_Y2:%.*]] = f32[8]{0} slice([[Y]]), slice={[2:10]}
++// CHECK:   [[RESHAPE_Y2:%.*]] = f32[1,8]{1,0} reshape([[SLICE_Y2]])
++// CHECK:   [[CONCAT_XY:%.*]] = f32[2,8]{1,0} concatenate([[RESHAPE_X1]], [[RESHAPE_Y2]]), dimensions={0}
++// CHECK:   [[W1:%.*]] = f32[10]{0} parameter(1)
++// CHECK:   [[SLICE_W1:%.*]] = f32[8]{0} slice([[W1]]), slice={[0:8]}
++// CHECK:   [[RESHAPE_W1:%.*]] = f32[1,8]{1,0} reshape([[SLICE_W1]])
++// CHECK:   [[W2:%.*]] = f32[10]{0} parameter(3)
++// CHECK:   [[SLICE_W2:%.*]] = f32[8]{0} slice([[W2]]), slice={[2:10]}
++// CHECK:   [[RESHAPE_W2:%.*]] = f32[1,8]{1,0} reshape([[SLICE_W2]])
++// CHECK:   [[CONCAT_W:%.*]] = f32[2,8]{1,0} concatenate([[RESHAPE_W1]], [[RESHAPE_W2]]), dimensions={0}
++// CHECK:   ROOT {{.*}} = f32[8]{0} dot([[CONCAT_XY]], [[CONCAT_W]]), lhs_batch_dims={1}, lhs_contracting_dims={0}, rhs_batch_dims={1}, rhs_contracting_dims={0}
 +// CHECK: }
 +)");
 +}
@@ -1292,6 +1470,83 @@ index 0000000000..3a040883df
 +}
 +
 +}  // namespace
++
++TEST_F(RecognizeReduceWindowTest, UniversalDotGeneralFusion) {
++  const absl::string_view hlo_string = R"(
++HloModule UniversalDotGeneralFusion
++
++ENTRY main {
++  x = f32[10] parameter(0)
++  w1 = f32[10] parameter(1)
++  
++  // Create non-slice matching geometry arrays
++  x_1 = f32[10] reshape(x)
++  w_1 = f32[10] reshape(w1)
++  
++  m_1 = f32[10] multiply(x_1, w_1)
++  
++  y = f32[10] parameter(2)
++  w2 = f32[10] parameter(3)
++
++  x_2 = f32[10] reshape(y)
++  w_2 = f32[10] reshape(w2)
++
++  m_2 = f32[10] multiply(x_2, w_2)
++  
++  ROOT add = f32[10] add(m_1, m_2)
++}
++)";
++  CheckRecognizeReduceWindow(hlo_string, R"(
++// CHECK: ENTRY %main ({{.*}}: f32[10], {{.*}}: f32[10], {{.*}}: f32[10], {{.*}}: f32[10]) -> f32[10] {
++// CHECK:   [[X:%.*]] = f32[10]{0} parameter(0)
++// CHECK:   [[RESHAPE_X1:%.*]] = f32[10]{0} reshape([[X]])
++// CHECK:   [[RESHAPE_X1_1:%.*]] = f32[1,10]{1,0} reshape([[RESHAPE_X1]])
++// CHECK:   [[Y:%.*]] = f32[10]{0} parameter(2)
++// CHECK:   [[RESHAPE_Y2:%.*]] = f32[10]{0} reshape([[Y]])
++// CHECK:   [[RESHAPE_Y2_1:%.*]] = f32[1,10]{1,0} reshape([[RESHAPE_Y2]])
++// CHECK:   [[CONCAT_XY:%.*]] = f32[2,10]{1,0} concatenate([[RESHAPE_X1_1]], [[RESHAPE_Y2_1]]), dimensions={0}
++// CHECK:   [[W1:%.*]] = f32[10]{0} parameter(1)
++// CHECK:   [[RESHAPE_W1:%.*]] = f32[10]{0} reshape([[W1]])
++// CHECK:   [[RESHAPE_W1_1:%.*]] = f32[1,10]{1,0} reshape([[RESHAPE_W1]])
++// CHECK:   [[W2:%.*]] = f32[10]{0} parameter(3)
++// CHECK:   [[RESHAPE_W2:%.*]] = f32[10]{0} reshape([[W2]])
++// CHECK:   [[RESHAPE_W2_1:%.*]] = f32[1,10]{1,0} reshape([[RESHAPE_W2]])
++// CHECK:   [[CONCAT_W:%.*]] = f32[2,10]{1,0} concatenate([[RESHAPE_W1_1]], [[RESHAPE_W2_1]]), dimensions={0}
++// CHECK:   ROOT {{.*}} = f32[10]{0} dot([[CONCAT_XY]], [[CONCAT_W]]), lhs_batch_dims={1}, lhs_contracting_dims={0}, rhs_batch_dims={1}, rhs_contracting_dims={0}
++// CHECK: }
++)");
++}
++
++TEST_F(RecognizeReduceWindowTest, DeadParameterDoesNotCrash) {
++  const absl::string_view hlo_string = R"(
++HloModule DeadParameterDoesNotCrash
++
++ENTRY main {
++  x = f32[10] parameter(0)
++  dead = f32[10] parameter(1)
++  
++  slice_1 = f32[8] slice(x), slice={[0:8]}
++  slice_2 = f32[8] slice(x), slice={[2:10]}
++  
++  ROOT add = f32[8] add(slice_1, slice_2)
++}
++)";
++  CheckRecognizeReduceWindow(hlo_string, R"(
++// CHECK: %[[REDUCER_NAME:.*]] ({{.*}}) -> f32[] {
++// CHECK:   [[LHS:%.*]] = f32[] parameter(0)
++// CHECK:   [[RHS:%.*]] = f32[] parameter(1)
++// CHECK:   ROOT {{.*}} = f32[] add([[LHS]], [[RHS]])
++// CHECK: }
++// CHECK: ENTRY %main ({{.*}}: f32[10], {{.*}}: f32[10]) -> f32[8] {
++// CHECK-DAG:   [[DEAD:%.*]] = f32[10]{0} parameter(1)
++// CHECK-DAG:   [[X:%.*]] = f32[10]{0} parameter(0)
++// CHECK:   [[SLICE:%.*]] = f32[10]{0} slice([[X]]), slice={[0:10]}
++// CHECK:   [[ZERO:%.*]] = f32[] constant(0)
++// CHECK:   ROOT {{.*}} = f32[8]{0} reduce-window([[SLICE]], [[ZERO]]), window={size=2 rhs_dilate=2}, to_apply=%[[REDUCER_NAME]]
++// CHECK: }
++)");
++}
++
 +}  // namespace xla
 diff --git a/xla/service/cpu/BUILD b/xla/service/cpu/BUILD
 index 4ab5b8d6c9..16cab5864c 100644
