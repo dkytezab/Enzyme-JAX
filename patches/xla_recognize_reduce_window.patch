@@ -78,10 +78,10 @@ index 0d20742635..e9a07f5826 100644
      srcs = ["float_normalization.cc"],
 diff --git a/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc b/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
 new file mode 100644
-index 0000000000..c798ca7bfe
+index 0000000000..4b75c5992f
 --- /dev/null
 +++ b/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
-@@ -0,0 +1,900 @@
+@@ -0,0 +1,903 @@
 +/* Copyright 2025 The OpenXLA Authors.
 +
 +Licensed under the Apache License, Version 2.0 (the "License");
@@ -222,6 +222,10 @@ index 0000000000..c798ca7bfe
 +      }
 +    }
 +  }
++  if (a->opcode() == HloOpcode::kParameter &&
++      b->opcode() == HloOpcode::kParameter) {
++    return a->parameter_number() < b->parameter_number();
++  }
 +  return a->unique_id() < b->unique_id();
 +}
 +
@@ -344,8 +348,8 @@ index 0000000000..c798ca7bfe
 +        slices.insert(slices.end(),
 +                      std::make_move_iterator(temp_slices.begin()),
 +                      std::make_move_iterator(temp_slices.end()));
++        return;
 +      }
-+      return;
 +    }
 +  }
 +
@@ -582,8 +586,7 @@ index 0000000000..c798ca7bfe
 +
 +      ExtractWeightedSlices(inst, combined_slices);
 +      {
-+        CHECK_GT(combined_slices.size(), 0);
-+        Shape slice_shape = combined_slices[0].slice->shape();
++        Shape slice_shape = inst->shape();
 +        int64_t rank = slice_shape.dimensions_size();
 +
 +        bool any_array_weights = false;
@@ -1583,10 +1586,10 @@ index ed58b6347d..b7a50be0b7 100644
          /*single_call_site=*/false,
          /*update_domain=*/false,
 diff --git a/xla/service/gpu/BUILD b/xla/service/gpu/BUILD
-index 7fba75d3a3..9a47028f7e 100644
+index 7884b2bc77..08cf03c25a 100644
 --- a/xla/service/gpu/BUILD
 +++ b/xla/service/gpu/BUILD
-@@ -2751,6 +2751,7 @@ cc_library(
+@@ -2754,6 +2754,7 @@ cc_library(
          "//xla/hlo/transforms/simplifiers:hlo_constant_folding",
          "//xla/hlo/transforms/simplifiers:hlo_constant_splitter",
          "//xla/hlo/transforms/simplifiers:hlo_dce",
@@ -1617,10 +1620,10 @@ index c4e554f4be..b61e25b8f0 100644
    // it doesn't inline functions needed for ShardyXLA. ShardyXLA will also leave
    // functions called `kInlineableManualComputationFuncName` not inlined, so
 diff --git a/xla/tools/hlo_opt/BUILD b/xla/tools/hlo_opt/BUILD
-index 058a1f2524..b5aed5597f 100644
+index 4d7e4d293a..79a1c31e45 100644
 --- a/xla/tools/hlo_opt/BUILD
 +++ b/xla/tools/hlo_opt/BUILD
-@@ -170,6 +170,7 @@ cc_library(
+@@ -174,6 +174,7 @@ cc_library(
          "//xla/hlo/tools/hlo_opt:opt_lib",
          "//xla/hlo/transforms:host_offloader",
          "//xla/hlo/transforms/simplifiers:hlo_memory_scheduler",
