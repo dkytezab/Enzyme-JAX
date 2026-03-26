@@ -72,8 +72,8 @@ llvm.func @caller() {
 }
 
 // CHECK-LABEL: tessera.define @tessera_sret_func
-// CHECK-SAME: tessera.has_sret
-// CHECK: tessera.return {{.*}} : !llvm.struct<(f32, f32)>
+// CHECK-SAME: tessera.sret_attrs = {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}
+// CHECK: tessera.return
 
 // CHECK-LABEL: llvm.func @caller
 // CHECK: %[[RES:.*]] = tessera.call @tessera_sret_func

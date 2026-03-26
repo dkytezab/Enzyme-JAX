@@ -59,19 +59,20 @@ public:
     auto llvmFuncType = funcOp.getFunctionType();
     auto params = llvmFuncType.getParams();
     auto retType = llvmFuncType.getReturnType();
-    
+
     // Check if first argument has sret attribute
     bool hasSret = false;
     auto argAttrs = funcOp.getArgAttrsAttr();
     if (!params.empty() && argAttrs) {
       auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
-      if (auto sretAttr = firstArgAttrs.get("llvm.sret"))
+      if (auto sretAttr =
+              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName()))
         hasSret = true;
     }
 
-    auto fnType =
-        FunctionType::get(ctx, params, isa<LLVM::LLVMVoidType>(retType)
-                              ? TypeRange{} : TypeRange{retType});
+    auto fnType = FunctionType::get(
+        ctx, params,
+        isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
 
     // Replace current function name with tessera name defined in
     // tessera.convert attribute
@@ -94,7 +95,7 @@ public:
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
 
-    // Add attribute if function uses struct return and store the first arg's 
+    // Add attribute if function uses struct return and store the first arg's
     // attributes for exact reconstruction later
     if (hasSret)
       tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
@@ -136,33 +137,43 @@ public:
     Value sretPtr;
     Type sretType;
     auto operands = callOp.getOperands();
+    auto argAttrs = callOp.getArgAttrsAttr();
     SmallVector<Value> newOperands;
-    if (!operands.empty()) {
-      auto argAttrs = callOp.getArgAttrsAttr();
-      if (argAttrs) {
-        auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
-        if (auto sretAttr = firstArgAttrs.get("llvm.sret")) {
-	  sretPtr = callOp.getOperand(0);
-	  sretType = cast<TypeAttr>(sretAttr).getValue();
+    SmallVector<Attribute> newArgAttrs;
+    SmallVector<NamedAttribute> newAttrs;
+
+    if (!operands.empty() && argAttrs) {
+      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
+      if (auto sretAttr =
+              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName())) {
+        sretPtr = callOp.getOperand(0);
+        sretType = cast<TypeAttr>(sretAttr).getValue();
+        // Build operands and arg attributes without first element
+        for (int i = 1; i < operands.size(); i++)
+          newOperands.push_back(callOp.getOperand(i));
+        for (int j = 1; j < argAttrs.size(); j++)
+          newArgAttrs.push_back(argAttrs[j]);
+        // Filter out arg_attrs from attributes
+        for (auto attr : callOp->getAttrs()) {
+          if (attr.getName() != callOp.getArgAttrsAttrName())
+            newAttrs.push_back(attr);
         }
       }
     }
 
-    // Remove first operand if it had sret attribute. 
-    int startIdx = sretPtr? 1 : 0;
-    for (int i = startIdx; i < operands.size(); i++) {
-      newOperands.push_back(callOp.getOperand(i));
-    }
-
     // Create tessera.call op with SSA return type
-    auto newCall = rewriter.create<tessera::CallOp>(
-        callOp.getLoc(), sretType ? TypeRange{sretType} : TypeRange(callOp.getResultTypes()), 
-	newOperands, callOp->getAttrs());
-    
-    if (sretPtr)
-      rewriter.create<LLVM::StoreOp>(callOp.getLoc(), newCall.getResult(0), sretPtr);
-
-    rewriter.eraseOp(callOp);
+    if (sretPtr) {
+      auto newCall = rewriter.create<tessera::CallOp>(
+          callOp.getLoc(), TypeRange{sretType}, newOperands, newAttrs);
+      rewriter.create<LLVM::StoreOp>(callOp.getLoc(), newCall.getResult(0),
+                                     sretPtr);
+      newCall->setAttr(newCall.getArgAttrsAttrName(),
+                       rewriter.getArrayAttr(newArgAttrs));
+      rewriter.eraseOp(callOp);
+    } else {
+      rewriter.replaceOpWithNewOp<tessera::CallOp>(
+          callOp, callOp.getResultTypes(), operands, callOp->getAttrs());
+    }
 
     return success();
   }
@@ -202,7 +213,8 @@ struct LLVMToTesseraPass
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns), config))) {
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
                       "dialect operations\n";
       signalPassFailure();

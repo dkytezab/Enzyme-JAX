@@ -142,7 +142,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   bool has_sret = (fn->hasAttr("tessera.sret_attrs"));
   auto fnType = fn.getFunctionType();
 
-  // If tessera.define has sret attribute, 
+  // If tessera.define has sret attribute,
   // tessera.call operand count = tessera.define input count - 1
   if (has_sret && (fnType.getNumInputs() - 1) != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
@@ -154,7 +154,8 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     if (getOperand(i - startIdx).getType() != fnType.getInput(i))
       return emitOpError("operand type mismatch: expected operand type ")
              << fnType.getInput(i) << ", but provided "
-             << getOperand(i - startIdx).getType() << " for operand number " << i - startIdx;
+             << getOperand(i - startIdx).getType() << " for operand number "
+             << i - startIdx;
 
   // If tessera.define has sret attribute,
   // tessera.call result count = tessera.define result count + 1
@@ -169,7 +170,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     auto sretType = cast<TypeAttr>(firstArgAttr.get("llvm.sret")).getValue();
     if (getResult(0).getType() != sretType)
       return emitOpError("result type mismatch: expected ")
-	      << sretType << " but got " << getResult(0).getType();
+             << sretType << " but got " << getResult(0).getType();
   } else {
     for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
       if (getResult(i).getType() != fnType.getResult(i)) {
