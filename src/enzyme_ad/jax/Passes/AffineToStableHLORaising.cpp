@@ -57,6 +57,16 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+bool isXLACompatiblePrimitive(Type ty) {
+  if (isa<FloatType>(ty))
+    return true;
+  if (isa<IntegerType>(ty))
+    return true;
+  if (isa<ComplexType>(ty))
+    return true;
+  return false;
+}
+
 Type makeIndexToI64(Type ty) {
   if (isa<IndexType>(ty))
     return IntegerType::get(ty.getContext(), 64);
@@ -277,6 +287,7 @@ struct ParallelContext {
   RankedTensorType getTensorType(Type elTy) {
     SmallVector<int64_t> shape = llvm::map_to_vector(
         ranges, [&](auto range) { return range.getNumIters(); });
+    assert(isXLACompatiblePrimitive(elTy) && "unsupported element type for XLA");
     return RankedTensorType::get(shape, elTy);
   }
 
@@ -2739,7 +2750,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     auto input = mapping.lookup(operand);
-    auto MT = p2m.getType();
+    if (!isXLACompatiblePrimitive(MT.getElementType())) {
+      return op->emitError("unsupported element type for XLA: ")
+             << MT.getElementType();
+    }
+
     auto ty = RankedTensorType::get(MT.getShape(), MT.getElementType());
 
     auto inTy = cast<RankedTensorType>(input.getType());
@@ -3075,6 +3090,12 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
   SmallVector<Type> tensorTypes;
   for (auto arg : body->getArguments()) {
     auto MT = cast<MemRefType>(arg.getType());
+    if (!isXLACompatiblePrimitive(MT.getElementType())) {
+      func.emitError("unsupported element type for argument for XLA: ")
+          << MT.getElementType();
+      delete newBlock;
+      return false;
+    }
     auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
     auto newArg = newBlock->addArgument(
         TT, rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo));
