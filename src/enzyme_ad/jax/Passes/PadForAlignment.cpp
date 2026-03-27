@@ -80,6 +80,7 @@ struct AlignmentHandler {
 
   bool handleConstantOp(stablehlo::ConstantOp op);
   bool handleReturnOp(stablehlo::ReturnOp op);
+  bool handleIfOp(stablehlo::IfOp op);
   bool handleWhileOp(stablehlo::WhileOp op);
   bool handlePadOp(stablehlo::PadOp op);
   bool handleSliceOp(stablehlo::SliceOp op);
@@ -240,6 +241,36 @@ bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
     }
   }
   op.getResultsMutable().assign(newOperands);
+  return true;
+}
+
+bool AlignmentHandler::handleIfOp(stablehlo::IfOp op) {
+  bool needsUpdate = false;
+  SmallVector<Type> newRetTypes;
+  for (auto res : op.getResults()) {
+    if (paddedValues.contains(res)) {
+      needsUpdate = true;
+      newRetTypes.push_back(paddedValues[res].getType());
+    } else {
+      newRetTypes.push_back(res.getType());
+    }
+  }
+
+  if (needsUpdate) {
+    builder.setInsertionPoint(op);
+    auto newIf = builder.create<stablehlo::IfOp>(op.getLoc(), newRetTypes,
+                                                  op.getPred());
+
+    newIf.getTrueBranch().takeBody(op.getTrueBranch());
+    newIf.getFalseBranch().takeBody(op.getFalseBranch());
+
+    // update uses of non-padded results to point to the new if results
+    for (auto [i, res] : llvm::enumerate(op->getResults()))
+      if (!paddedValues.contains(res))
+        res.replaceAllUsesWith(newIf.getResult(i));
+
+    eraseWithReplacement(op, newIf.getResults());
+  }
   return true;
 }
 
@@ -823,6 +854,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleConstantOp(constOp);
     } else if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
       handled = handler.handleReturnOp(returnOp);
+    } else if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
+      handled = handler.handleIfOp(ifOp);
     } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
       handled = handler.handleWhileOp(whileOp);
     } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
@@ -854,35 +887,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
               handler.getOrCreateSliceOp(paddedValues[operand], operand);
           op->setOperand(i, slice);
         }
-      }
-    }
-  }
-
-  // recreate regional ops (IfOp, WhileOp)
-  for (auto op : ops) {
-    if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
-      bool needsUpdate = false;
-      SmallVector<Type> newRetTypes;
-      for (auto res : ifOp.getResults()) {
-        if (handler.paddedValues.contains(res)) {
-          needsUpdate = true;
-          newRetTypes.push_back(handler.paddedValues[res].getType());
-        } else {
-          newRetTypes.push_back(res.getType());
-        }
-      }
-
-      if (needsUpdate) {
-        builder.setInsertionPoint(ifOp);
-        auto newIf = builder.create<stablehlo::IfOp>(ifOp.getLoc(), newRetTypes,
-                                                     ifOp.getPred());
-
-        newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
-        newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
-
-        for (unsigned i = 0; i < ifOp.getNumResults(); ++i)
-          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(i));
-        handler.eraseWithReplacement(ifOp, newIf.getResults());
       }
     }
   }
