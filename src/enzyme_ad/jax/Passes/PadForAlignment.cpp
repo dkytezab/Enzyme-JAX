@@ -80,6 +80,7 @@ struct AlignmentHandler {
 
   bool handleConstantOp(stablehlo::ConstantOp op);
   bool handleReturnOp(stablehlo::ReturnOp op);
+  bool handleWhileOp(stablehlo::WhileOp op);
   bool handlePadOp(stablehlo::PadOp op);
   bool handleSliceOp(stablehlo::SliceOp op);
   bool handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceOp op);
@@ -242,6 +243,64 @@ bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
   return true;
 }
 
+bool AlignmentHandler::handleWhileOp(stablehlo::WhileOp op) {
+  if (!llvm::any_of(op->getOperands(), needsPadding) && !llvm::any_of(op->getResults(), needsPadding))
+    return false;
+
+  bool needsUpdate = false;
+  SmallVector<Type> newRetTypes;
+  SmallVector<Value> newOperands;
+
+  for (unsigned i = 0; i < op->getNumOperands(); ++i) {
+    auto operand = op->getOperand(i);
+    if (paddedValues.contains(operand)) {
+      needsUpdate = true;
+      newOperands.push_back(paddedValues[operand]);
+      newRetTypes.push_back(paddedValues[operand].getType());
+    } else {
+      newOperands.push_back(operand);
+      newRetTypes.push_back(operand.getType());
+    }
+  }
+
+  if (needsUpdate) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(op);
+    auto newWhile = builder.create<stablehlo::WhileOp>(
+      op.getLoc(), newRetTypes, newOperands);
+
+    newWhile.getCond().takeBody(op.getCond());
+    newWhile.getBody().takeBody(op.getBody());
+
+    // update block arguments in both regions
+    auto &condBlock = newWhile.getCond().front();
+    auto &bodyBlock = newWhile.getBody().front();
+    for (auto [i, operand] : llvm::enumerate(op->getOperands())) {
+      if (paddedValues.contains(operand)) {
+        condBlock.getArgument(i).setType(paddedValues[operand].getType());
+        bodyBlock.getArgument(i).setType(paddedValues[operand].getType());
+
+        // skip padding of block arguments since they already have been padded before the while op
+        paddedValues[condBlock.getArgument(i)].replaceAllUsesWith(condBlock.getArgument(i));
+        paddedValues[bodyBlock.getArgument(i)].replaceAllUsesWith(bodyBlock.getArgument(i));
+        paddedValues.erase(condBlock.getArgument(i));
+        paddedValues.erase(bodyBlock.getArgument(i));
+      }
+    }
+
+    // update uses of non-padded results to point to the new while results
+    for (auto [i, res] : llvm::enumerate(op->getResults())) {
+      if (!paddedValues.contains(res)) {
+        res.replaceAllUsesWith(newWhile.getResult(i));
+      }
+    }
+
+    eraseWithReplacement(op, newWhile.getResults());
+  }
+
+  return true;
+}
+
 bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
   auto input = op.getOperand();
   auto res = op.getResult();
@@ -323,8 +382,6 @@ bool AlignmentHandler::handleSliceOp(stablehlo::SliceOp op) {
 
   builder.setInsertionPoint(op);
   Value paddedInput = getValueOrPadded(input);
-
-  // TODO FROM HERE DOWN
 
   auto start = llvm::to_vector(op.getStartIndices());
   auto limit = llvm::to_vector(op.getLimitIndices());
@@ -720,9 +777,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
 
   AlignmentHandler handler(builder, paddedValues, originalValues);
 
-  // llvm::errs() << "[@] === BEGIN ====" << "\n";
-  // llvm::errs() << "func: @" << func.getSymName() << "\n";
-
   // create placeholders for all original values that need padding
   DenseMap<Value, Operation *> placeholders;
   SmallVector<Operation *> ops;
@@ -762,13 +816,15 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     }
   });
 
-  // Step 2: Optimal Propagation Traversal
+  // optimal propagation traversal
   for (auto op : ops) {
     bool handled = false;
     if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
       handled = handler.handleConstantOp(constOp);
     } else if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
       handled = handler.handleReturnOp(returnOp);
+    } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
+      handled = handler.handleWhileOp(whileOp);
     } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
       handled = handler.handlePadOp(pad);
     } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
@@ -802,7 +858,7 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     }
   }
 
-  // Step 2.25: Recreate Regional Ops (IfOp, WhileOp)
+  // recreate regional ops (IfOp, WhileOp)
   for (auto op : ops) {
     if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
       bool needsUpdate = false;
@@ -828,44 +884,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
           ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(i));
         handler.eraseWithReplacement(ifOp, newIf.getResults());
       }
-    } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
-      bool needsUpdate = false;
-      SmallVector<Type> newRetTypes;
-      SmallVector<Value> newOperands;
-      for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
-        auto v = whileOp->getOperand(i);
-        if (handler.paddedValues.contains(v)) {
-          needsUpdate = true;
-          newOperands.push_back(handler.paddedValues[v]);
-          newRetTypes.push_back(handler.paddedValues[v].getType());
-        } else {
-          newOperands.push_back(v);
-          newRetTypes.push_back(v.getType());
-        }
-      }
-
-      if (needsUpdate) {
-        for (auto region : {&whileOp.getCond(), &whileOp.getBody()}) {
-          auto &block = region->front();
-          for (unsigned i = 0; i < block.getNumArguments(); ++i) {
-            if (handler.paddedValues.contains(whileOp->getOperand(i))) {
-              block.getArgument(i).setType(
-                  handler.paddedValues[whileOp->getOperand(i)].getType());
-            }
-          }
-        }
-
-        builder.setInsertionPoint(whileOp);
-        auto newWhile = builder.create<stablehlo::WhileOp>(
-            whileOp.getLoc(), newRetTypes, newOperands);
-
-        newWhile.getCond().takeBody(whileOp.getCond());
-        newWhile.getBody().takeBody(whileOp.getBody());
-
-        for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
-          whileOp.getResult(i).replaceAllUsesWith(newWhile.getResult(i));
-        handler.eraseWithReplacement(whileOp, newWhile.getResults());
-      }
     }
   }
 
@@ -886,23 +904,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     phRes.replaceAllUsesWith(realPad);
   }
 
-  // Step 3: Replace uses for values that have been padded
-  // for (auto [orig, padded] : paddedValues) {
-  //   if (orig.use_empty())
-  //     continue;
-
-  //   auto origType = cast<RankedTensorType>(orig.getType());
-  //   auto paddedType = cast<RankedTensorType>(padded.getType());
-  //   if (origType == paddedType)
-  //     continue;
-
-  //   // builder.setInsertionPointAfterValue(padded);
-  //   // /* auto sliced = */handler.getOrCreateSliceOp(padded, orig);
-
-  //   // TODO this has dominance issues
-  //   // orig.replaceAllUsesWith(sliced);
-  // }
-
   // safely delete all placeholders
   for (auto [_, ph] : placeholders) {
     ph->erase();
@@ -913,10 +914,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     assert(op->use_empty());
     op->erase();
   }
-
-  // llvm::errs() << "[@] === BEGIN DUMP ===\n";
-  // func.dump();
-  // llvm::errs() << "[@] === END DUMP ===\n";
 }
 
 } // namespace enzyme
