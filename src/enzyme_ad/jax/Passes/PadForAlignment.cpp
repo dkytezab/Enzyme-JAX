@@ -79,6 +79,7 @@ struct AlignmentHandler {
   Value getOrCreateSliceOp(Value paddedV, Value origV);
 
   bool handleConstantOp(stablehlo::ConstantOp op);
+  bool handleReturnOp(stablehlo::ReturnOp op);
   bool handlePadOp(stablehlo::PadOp op);
   bool handleSliceOp(stablehlo::SliceOp op);
   bool handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceOp op);
@@ -89,13 +90,13 @@ struct AlignmentHandler {
   bool handleDotGeneralOp(stablehlo::DotGeneralOp op);
   bool handleTransposeOp(stablehlo::TransposeOp op);
 
+  // it doesn't update the results of `op`; i.e. just updates the `paddedValues`
+  // and may mark it for erasure
   void eraseWithReplacement(Operation *op, ValueRange replacements,
                             bool should_erase = true) {
     for (auto [res, rep] : llvm::zip_equal(op->getResults(), replacements)) {
-      auto found = paddedValues.find(res);
-      assert(found != paddedValues.end());
-      paddedValues.erase(found);
-      paddedValues[res] = rep;
+      if (paddedValues.contains(res))
+        paddedValues[res] = rep;
     }
     if (should_erase) {
       toErase.push_back(op);
@@ -223,6 +224,21 @@ bool AlignmentHandler::handleConstantOp(stablehlo::ConstantOp op) {
                                  padZero.getResult(), low, high, interior);
     eraseWithReplacement(op, padOp.getResult());
   }
+  return true;
+}
+
+bool AlignmentHandler::handleReturnOp(stablehlo::ReturnOp op) {
+  auto parent = op->getParentOp();
+  if (!parent || !isa<stablehlo::IfOp, stablehlo::WhileOp>(parent))
+    return false;
+
+  SmallVector<Value> newOperands = llvm::to_vector(op.getOperands());
+  for (auto &val : newOperands) {
+    if (paddedValues.count(val)) {
+      val = paddedValues[val];
+    }
+  }
+  op.getResultsMutable().assign(newOperands);
   return true;
 }
 
@@ -749,11 +765,10 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   // Step 2: Optimal Propagation Traversal
   for (auto op : ops) {
     bool handled = false;
-    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
-      // llvm::errs() << "[PadForAlignment] Handling FuncOp\n";
-    //   // handled = handler.handleFuncOp(funcOp);
-    } else if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
+    if (auto constOp = dyn_cast<stablehlo::ConstantOp>(op)) {
       handled = handler.handleConstantOp(constOp);
+    } else if (auto returnOp = dyn_cast<stablehlo::ReturnOp>(op)) {
+      handled = handler.handleReturnOp(returnOp);
     } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
       handled = handler.handlePadOp(pad);
     } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
@@ -788,82 +803,71 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   }
 
   // Step 2.25: Recreate Regional Ops (IfOp, WhileOp)
-  // for (auto op : ops) {
-  //   if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
-  //     bool needsUpdate = false;
-  //     SmallVector<Type> newRetTypes;
-  //     for (auto res : ifOp.getResults()) {
-  //       if (handler.paddedValues.contains(res)) {
-  //         needsUpdate = true;
-  //         newRetTypes.push_back(handler.paddedValues[res].getType());
-  //       } else {
-  //         newRetTypes.push_back(res.getType());
-  //       }
-  //     }
+  for (auto op : ops) {
+    if (auto ifOp = dyn_cast<stablehlo::IfOp>(op)) {
+      bool needsUpdate = false;
+      SmallVector<Type> newRetTypes;
+      for (auto res : ifOp.getResults()) {
+        if (handler.paddedValues.contains(res)) {
+          needsUpdate = true;
+          newRetTypes.push_back(handler.paddedValues[res].getType());
+        } else {
+          newRetTypes.push_back(res.getType());
+        }
+      }
 
-  //     if (needsUpdate) {
-  //       builder.setInsertionPoint(ifOp);
-  //       auto newIf = builder.create<stablehlo::IfOp>(ifOp.getLoc(),
-  //       newRetTypes,
-  //                                                    ifOp.getPred());
+      if (needsUpdate) {
+        builder.setInsertionPoint(ifOp);
+        auto newIf = builder.create<stablehlo::IfOp>(ifOp.getLoc(), newRetTypes,
+                                                     ifOp.getPred());
 
-  //       newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
-  //       newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
+        newIf.getTrueBranch().takeBody(ifOp.getTrueBranch());
+        newIf.getFalseBranch().takeBody(ifOp.getFalseBranch());
 
-  //       for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
-  //         ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(i));
-  //         if (handler.paddedValues.contains(ifOp.getResult(i))) {
-  //           handler.paddedValues[newIf.getResult(i)] =
-  //               handler.paddedValues[ifOp.getResult(i)];
-  //         }
-  //       }
-  //       opsToErase.push_back(ifOp);
-  //     }
-  //   } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
-  //     bool needsUpdate = false;
-  //     SmallVector<Type> newRetTypes;
-  //     SmallVector<Value> newOperands;
-  //     for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
-  //       auto v = whileOp->getOperand(i);
-  //       if (handler.paddedValues.contains(v)) {
-  //         needsUpdate = true;
-  //         newOperands.push_back(handler.paddedValues[v]);
-  //         newRetTypes.push_back(handler.paddedValues[v].getType());
-  //       } else {
-  //         newOperands.push_back(v);
-  //         newRetTypes.push_back(v.getType());
-  //       }
-  //     }
+        for (unsigned i = 0; i < ifOp.getNumResults(); ++i)
+          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(i));
+        handler.eraseWithReplacement(ifOp, newIf.getResults());
+      }
+    } else if (auto whileOp = dyn_cast<stablehlo::WhileOp>(op)) {
+      bool needsUpdate = false;
+      SmallVector<Type> newRetTypes;
+      SmallVector<Value> newOperands;
+      for (unsigned i = 0; i < whileOp->getNumOperands(); ++i) {
+        auto v = whileOp->getOperand(i);
+        if (handler.paddedValues.contains(v)) {
+          needsUpdate = true;
+          newOperands.push_back(handler.paddedValues[v]);
+          newRetTypes.push_back(handler.paddedValues[v].getType());
+        } else {
+          newOperands.push_back(v);
+          newRetTypes.push_back(v.getType());
+        }
+      }
 
-  //     if (needsUpdate) {
-  //       for (auto region : {&whileOp.getCond(), &whileOp.getBody()}) {
-  //         auto &block = region->front();
-  //         for (unsigned i = 0; i < block.getNumArguments(); ++i) {
-  //           if (handler.paddedValues.contains(whileOp->getOperand(i))) {
-  //             block.getArgument(i).setType(
-  //                 handler.paddedValues[whileOp->getOperand(i)].getType());
-  //           }
-  //         }
-  //       }
+      if (needsUpdate) {
+        for (auto region : {&whileOp.getCond(), &whileOp.getBody()}) {
+          auto &block = region->front();
+          for (unsigned i = 0; i < block.getNumArguments(); ++i) {
+            if (handler.paddedValues.contains(whileOp->getOperand(i))) {
+              block.getArgument(i).setType(
+                  handler.paddedValues[whileOp->getOperand(i)].getType());
+            }
+          }
+        }
 
-  //       builder.setInsertionPoint(whileOp);
-  //       auto newWhile = builder.create<stablehlo::WhileOp>(
-  //           whileOp.getLoc(), newRetTypes, newOperands);
+        builder.setInsertionPoint(whileOp);
+        auto newWhile = builder.create<stablehlo::WhileOp>(
+            whileOp.getLoc(), newRetTypes, newOperands);
 
-  //       newWhile.getCond().takeBody(whileOp.getCond());
-  //       newWhile.getBody().takeBody(whileOp.getBody());
+        newWhile.getCond().takeBody(whileOp.getCond());
+        newWhile.getBody().takeBody(whileOp.getBody());
 
-  //       for (unsigned i = 0; i < whileOp.getNumResults(); ++i) {
-  //         whileOp.getResult(i).replaceAllUsesWith(newWhile.getResult(i));
-  //         if (handler.paddedValues.contains(whileOp.getResult(i))) {
-  //           handler.paddedValues[newWhile.getResult(i)] =
-  //               handler.paddedValues[whileOp.getResult(i)];
-  //         }
-  //       }
-  //       opsToErase.push_back(whileOp);
-  //     }
-  //   }
-  // }
+        for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
+          whileOp.getResult(i).replaceAllUsesWith(newWhile.getResult(i));
+        handler.eraseWithReplacement(whileOp, newWhile.getResults());
+      }
+    }
+  }
 
   // resolve placeholders
   for (auto [orig, ph] : placeholders) {
