@@ -793,9 +793,10 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     Value elseCond = stablehlo::NotOp::create(
         builder,
         rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), cond);
+    maps[elseCond] = maps.lookup(cond);
 
     Value elseMask = getMaskedCond(elseCond, pc.mask);
-    maps[elseMask] = maps.lookup(mask);
+    assert(maps.contains(elseMask));
     elsePc.mask = elseMask;
 
     for (auto &innerOp : elseBlock->without_terminator()) {
@@ -1800,8 +1801,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     });
     bool emitAsGather =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
-        dynIndices &&
-            llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
+        (dynIndices &&
+         llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
         needsGeneralScatterGather(accessValueMap);
 
     if (emitAsGather) {
