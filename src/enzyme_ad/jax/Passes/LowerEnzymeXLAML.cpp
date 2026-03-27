@@ -9,6 +9,7 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/transforms/ChloDecompositionUtils.h"
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
@@ -39,6 +40,22 @@ struct LowerReluOpToStablehlo : public OpRewritePattern<enzymexla::ReluOp> {
     auto maxTerm = stablehlo::MaxOp::create(rewriter, loc, operand, zero);
 
     rewriter.replaceOp(op, maxTerm);
+    return success();
+  }
+};
+
+struct LowerTGammaOpToStablehlo : public OpRewritePattern<enzymexla::TGammaOp> {
+  using OpRewritePattern<enzymexla::TGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::TGammaOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto operand = op.getOperand();
+
+    auto LGamma = stablehlo::materializeLgamma(rewriter, loc, operand);
+    auto TGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
+
+    rewriter.replaceOp(op, TGamma);
     return success();
   }
 };
@@ -192,6 +209,7 @@ struct LowerEnzymeXLAMLPass
     patterns.add<LowerReluOpToStablehlo>(context);
     patterns.add<LowerGeluOpToStablehlo>(context);
     patterns.add<LowerSoftplusOpToStablehlo>(context);
+    patterns.add<LowerTGammaOpToStablehlo>(context);
 
     GreedyRewriteConfig config;
     config.enableFolding();
