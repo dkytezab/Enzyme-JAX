@@ -53,8 +53,8 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
 
         reactant_commit:
-          - 'main'
-          - 'multipad'
+          - 'bf16cu'
+          # - 'multipad'
 
     steps:
       - name: Check GPUs
