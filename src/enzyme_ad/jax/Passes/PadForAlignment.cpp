@@ -258,8 +258,8 @@ bool AlignmentHandler::handleIfOp(stablehlo::IfOp op) {
 
   if (needsUpdate) {
     builder.setInsertionPoint(op);
-    auto newIf = builder.create<stablehlo::IfOp>(op.getLoc(), newRetTypes,
-                                                  op.getPred());
+    auto newIf =
+        builder.create<stablehlo::IfOp>(op.getLoc(), newRetTypes, op.getPred());
 
     newIf.getTrueBranch().takeBody(op.getTrueBranch());
     newIf.getFalseBranch().takeBody(op.getFalseBranch());
@@ -275,7 +275,8 @@ bool AlignmentHandler::handleIfOp(stablehlo::IfOp op) {
 }
 
 bool AlignmentHandler::handleWhileOp(stablehlo::WhileOp op) {
-  if (!llvm::any_of(op->getOperands(), needsPadding) && !llvm::any_of(op->getResults(), needsPadding))
+  if (!llvm::any_of(op->getOperands(), needsPadding) &&
+      !llvm::any_of(op->getResults(), needsPadding))
     return false;
 
   bool needsUpdate = false;
@@ -297,8 +298,8 @@ bool AlignmentHandler::handleWhileOp(stablehlo::WhileOp op) {
   if (needsUpdate) {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPoint(op);
-    auto newWhile = builder.create<stablehlo::WhileOp>(
-      op.getLoc(), newRetTypes, newOperands);
+    auto newWhile = builder.create<stablehlo::WhileOp>(op.getLoc(), newRetTypes,
+                                                       newOperands);
 
     newWhile.getCond().takeBody(op.getCond());
     newWhile.getBody().takeBody(op.getBody());
@@ -311,9 +312,12 @@ bool AlignmentHandler::handleWhileOp(stablehlo::WhileOp op) {
         condBlock.getArgument(i).setType(paddedValues[operand].getType());
         bodyBlock.getArgument(i).setType(paddedValues[operand].getType());
 
-        // skip padding of block arguments since they already have been padded before the while op
-        paddedValues[condBlock.getArgument(i)].replaceAllUsesWith(condBlock.getArgument(i));
-        paddedValues[bodyBlock.getArgument(i)].replaceAllUsesWith(bodyBlock.getArgument(i));
+        // skip padding of block arguments since they already have been padded
+        // before the while op
+        paddedValues[condBlock.getArgument(i)].replaceAllUsesWith(
+            condBlock.getArgument(i));
+        paddedValues[bodyBlock.getArgument(i)].replaceAllUsesWith(
+            bodyBlock.getArgument(i));
         paddedValues.erase(condBlock.getArgument(i));
         paddedValues.erase(bodyBlock.getArgument(i));
       }
