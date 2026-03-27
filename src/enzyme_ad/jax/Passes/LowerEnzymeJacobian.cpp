@@ -40,77 +40,89 @@ struct DotGeneralLowering : public OpRewritePattern<stablehlo::DotGeneralOp> {
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp op,
                                 PatternRewriter &rewriter) const override {
     auto *context = rewriter.getContext();
-    auto lhsResult = dyn_cast<OpResult>(op.getLhs());
-    if (!lhsResult)
+
+    // either one of lhs or rhs has to be a enzyme.jacobian but not both
+    auto lhsOp = op.getLhs().getDefiningOp<enzyme::JacobianOp>();
+    auto rhsOp = op.getRhs().getDefiningOp<enzyme::JacobianOp>();
+
+    if (!lhsOp && !rhsOp)
       return failure();
 
-    auto jacobian = dyn_cast<enzyme::JacobianOp>(lhsResult.getOwner());
-    if (!jacobian)
+    if (lhsOp && rhsOp)
       return failure();
 
-    auto module = op->getParentOfType<ModuleOp>();
-    if (!module)
+    // construct autodiff args for fn
+    enzyme::JacobianOp jacOp = lhsOp ? lhsOp : rhsOp;
+    SymbolTableCollection symbolTable;
+    symbolTable.getSymbolTable(jacOp);
+    auto fn = cast<FunctionOpInterface>(
+        symbolTable.lookupNearestSymbolFrom(jacOp, jacOp.getFnAttr()));
+    auto nargs = fn.getNumArguments();
+    auto nouts = fn.getNumResults();
+    // the jacobian operand
+    // TODO: handle indexing for mutable arguments
+    // jidx = d(out_idx) / d(in_idx), where jidx = out_idx * nargs + in_idx;
+    auto J = cast<OpResult>(lhsOp ? op.getLhs() : op.getRhs());
+    auto jidx = J.getResultNumber();
+
+    if (jidx >= nargs * nouts)
       return failure();
 
-    auto fn = module.lookupSymbol<func::FuncOp>(jacobian.getFnAttr());
-    if (!fn)
-      return failure();
+    auto diffo_idx = jidx / nargs;
+    auto diffin_idx = jidx % nargs;
 
-    const size_t numArgs = fn.getNumArguments();
-    const size_t numResults = fn.getNumResults();
-    if (numArgs == 0 || numResults == 0)
-      return failure();
+    if (lhsOp) {
+      // JVP -> enzyme.fwddiff transform
+      // The resulting fwddiff op will only have in_idx -> enzyme_dup, out_idx
+      // -> enzyme_dupnoneed
 
-    // Assume Jacobian results are laid out by input, then by function result:
-    // J(out0, in0), J(out1, in0), ..., J(out0, in1), ...
-    const unsigned jacobianResultNumber = lhsResult.getResultNumber();
-    if (jacobianResultNumber >= numArgs * numResults)
-      return failure();
+      SmallVector<Value> in_args;
+      SmallVector<ActivityAttr, 2> newInActivityArgs;
+      SmallVector<ActivityAttr, 2> newRetActivityArgs;
+      for (auto [idx, act] :
+           llvm::enumerate(jacOp.getActivity().getAsRange<ActivityAttr>())) {
+        Value in = jacOp.getInputs()[idx];
 
-    const size_t argIdx = jacobianResultNumber / numResults;
-    const size_t retIdx = jacobianResultNumber % numResults;
-
-    SmallVector<Attribute> activityAttrs;
-    SmallVector<Value> fwddiffInputs;
-    activityAttrs.reserve(numArgs);
-    fwddiffInputs.reserve(numArgs + 1);
-
-    for (auto [idx, input] : llvm::enumerate(jacobian.getInputs())) {
-      if (idx == argIdx) {
-        activityAttrs.push_back(ActivityAttr::get(context,
-                                                  Activity::enzyme_dup));
-        fwddiffInputs.push_back(input);
-        fwddiffInputs.push_back(op.getRhs());
-      } else {
-        activityAttrs.push_back(ActivityAttr::get(context,
-                                                  Activity::enzyme_const));
-        fwddiffInputs.push_back(input);
+        if (idx != diffin_idx) {
+          in_args.push_back(in);
+          newInActivityArgs.push_back(
+              ActivityAttr::get(rewriter.getContext(), Activity::enzyme_const));
+        } else {
+          in_args.push_back(in);
+          in_args.push_back(op.getRhs());
+          newInActivityArgs.push_back(
+              ActivityAttr::get(rewriter.getContext(), Activity::enzyme_dup));
+        }
       }
+
+      // construct ret_args
+      for (auto [idx, ret_act] :
+           llvm::enumerate(jacOp.getRetActivity().getAsRange<ActivityAttr>())) {
+        if (idx == diffo_idx) {
+          newRetActivityArgs.push_back(ActivityAttr::get(
+              rewriter.getContext(), Activity::enzyme_dupnoneed));
+        } else {
+          newRetActivityArgs.push_back(ActivityAttr::get(
+              rewriter.getContext(), Activity::enzyme_constnoneed));
+        }
+      }
+
+      ArrayAttr newInActivity =
+          ArrayAttr::get(rewriter.getContext(),
+                         llvm::ArrayRef<Attribute>(newInActivityArgs.begin(),
+                                                   newInActivityArgs.end()));
+      ArrayAttr newRetActivity =
+          ArrayAttr::get(rewriter.getContext(),
+                         llvm::ArrayRef<Attribute>(newRetActivityArgs.begin(),
+                                                   newRetActivityArgs.end()));
+
+      rewriter.replaceOpWithNewOp<ForwardDiffOp>(
+          op, op->getResultTypes(), jacOp.getFnAttr(), in_args, newInActivity,
+          newRetActivity, nullptr, jacOp.getStrongZeroAttr());
+    } else {
+      // VJP -> enzyme.autodiff transform
     }
 
-    SmallVector<Attribute> retActivityAttrs;
-    retActivityAttrs.reserve(numResults);
-    for (size_t idx = 0; idx < numResults; ++idx) {
-      if (idx == retIdx) {
-        retActivityAttrs.push_back(
-            ActivityAttr::get(context, Activity::enzyme_dupnoneed));
-      } else {
-        retActivityAttrs.push_back(
-            ActivityAttr::get(context, Activity::enzyme_constnoneed));
-      }
-    }
-
-    auto selectedResultType = fn.getFunctionType().getResult(retIdx);
-    if (selectedResultType != op.getType())
-      return failure();
-
-    auto activityAttr = ArrayAttr::get(context, activityAttrs);
-    auto retActivityAttr = ArrayAttr::get(context, retActivityAttrs);
-    auto fwddiff = rewriter.create<enzyme::ForwardDiffOp>(
-        op.getLoc(), TypeRange{selectedResultType}, jacobian.getFnAttr(),
-        fwddiffInputs, activityAttr, retActivityAttr,
-        rewriter.getI64IntegerAttr(1), jacobian.getStrongZeroAttr());
-    rewriter.replaceOp(op, fwddiff.getOutputs());
     return success();
   }
 };
