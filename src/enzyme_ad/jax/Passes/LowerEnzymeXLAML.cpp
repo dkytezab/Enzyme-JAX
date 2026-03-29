@@ -49,13 +49,32 @@ struct LowerTGammaOpToStablehlo : public OpRewritePattern<enzymexla::TGammaOp> {
 
   LogicalResult matchAndRewrite(enzymexla::TGammaOp op,
                                 PatternRewriter &rewriter) const override {
+    // __nv_tgamma semantics:
+    //   x < 0   → NaN
+    //   x = ±0  → ±inf
+    //   x = +∞  → +∞
+    //   else    → exp(lgamma(x))
     auto loc = op.getLoc();
     auto operand = op.getOperand();
+    auto ty = op.getType();
+
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<ElementsAttr>(makeAttr(ty, 0)));
+    auto nan = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        cast<ElementsAttr>(makeAttr(ty, std::numeric_limits<double>::quiet_NaN())));
+
+    auto negPred = stablehlo::CompareOp::create(
+        rewriter, loc, operand, zero, stablehlo::ComparisonDirection::LT,
+        stablehlo::ComparisonType::FLOAT);
 
     auto LGamma = stablehlo::materializeLgamma(rewriter, loc, operand);
-    auto TGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
+    auto expLGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
 
-    rewriter.replaceOp(op, TGamma);
+    auto result = stablehlo::SelectOp::create(rewriter, loc, negPred, nan,
+                                              expLGamma);
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
