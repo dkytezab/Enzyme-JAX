@@ -6287,6 +6287,44 @@ struct GammaConstProp final
   }
 };
 
+struct TGammaConstProp final
+    : CheckedOpRewritePattern<enzymexla::TGammaOp, TGammaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::TGammaOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    // Lower to select(x < 0, NaN, exp(lgamma(x))) then let const-fold finish
+    auto loc = op.getLoc();
+    auto operand = op.getOperand();
+    auto ty = op.getType();
+
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<ElementsAttr>(makeAttr(ty, 0)));
+    auto nan = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        cast<ElementsAttr>(
+            makeAttr(ty, std::numeric_limits<double>::quiet_NaN())));
+
+    auto negPred = stablehlo::CompareOp::create(
+        rewriter, loc, operand, zero, stablehlo::ComparisonDirection::LT,
+        stablehlo::ComparisonType::FLOAT);
+
+    auto LGamma =
+        stablehlo::materializeLgamma(rewriter, loc, operand);
+    auto expLGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
+
+    auto result =
+        stablehlo::SelectOp::create(rewriter, loc, negPred, nan, expLGamma);
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct DynamicUpdateSliceConstProp final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
                               DynamicUpdateSliceConstProp> {
@@ -34952,7 +34990,7 @@ struct EnzymeHLOOptPass
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
+        DotReshapeDot, ChloInfConstProp, GammaConstProp, TGammaConstProp, ConcatFuse,
         ConcatToBroadcast, PadPad, PadReshapePad,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
