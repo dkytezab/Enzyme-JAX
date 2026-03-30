@@ -92,6 +92,12 @@ def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
                     (Softplus (Shadow $input))
                   >;
 
+def : EnzymeXLADerivative<"LGammaOp", (Op $input),
+                    [
+                      (CheckedMul (DiffeRet), (CHLO_Polygamma (HLOConstantFP<"0"> $input), $input))
+                    ]
+                  >;
+
 def : EnzymeXLADerivative<"TGammaOp", (Op $input),
                     [
                       (CheckedMul (DiffeRet), (CheckedMul (TGamma $input), (CHLO_Polygamma (HLOConstantFP<"0"> $input), $input)))
