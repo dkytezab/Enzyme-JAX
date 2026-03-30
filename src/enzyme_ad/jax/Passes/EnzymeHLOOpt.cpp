@@ -57,6 +57,7 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -6297,30 +6298,25 @@ struct TGammaConstProp final
     if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
       return failure();
 
-    // Lower to select(x < 0, NaN, exp(lgamma(x))) then let const-fold finish
-    auto loc = op.getLoc();
-    auto operand = op.getOperand();
-    auto ty = op.getType();
+    auto resultType = cast<ShapedType>(op.getType());
+    auto floatTy = dyn_cast<FloatType>(resultType.getElementType());
+    if (!floatTy)
+      return failure();
 
-    auto zero = stablehlo::ConstantOp::create(
-        rewriter, loc, cast<ElementsAttr>(makeAttr(ty, 0)));
-    auto nan = stablehlo::ConstantOp::create(
-        rewriter, loc,
-        cast<ElementsAttr>(
-            makeAttr(ty, std::numeric_limits<double>::quiet_NaN())));
+    const auto &sem = floatTy.getFloatSemantics();
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>()) {
+      double x = val.convertToDouble();
+      double res =
+          (x < 0.0) ? std::numeric_limits<double>::quiet_NaN() : std::tgamma(x);
+      bool losesInfo;
+      APFloat apRes(res);
+      apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
+      results.push_back(apRes);
+    }
 
-    auto negPred = stablehlo::CompareOp::create(
-        rewriter, loc, operand, zero, stablehlo::ComparisonDirection::LT,
-        stablehlo::ComparisonType::FLOAT);
-
-    auto LGamma =
-        stablehlo::materializeLgamma(rewriter, loc, operand);
-    auto expLGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
-
-    auto result =
-        stablehlo::SelectOp::create(rewriter, loc, negPred, nan, expLGamma);
-
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, DenseElementsAttr::get(resultType, results));
     return success();
   }
 };
@@ -34990,8 +34986,8 @@ struct EnzymeHLOOptPass
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, TGammaConstProp, ConcatFuse,
-        ConcatToBroadcast, PadPad, PadReshapePad,
+        DotReshapeDot, ChloInfConstProp, GammaConstProp, TGammaConstProp,
+        ConcatFuse, ConcatToBroadcast, PadPad, PadReshapePad,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
         ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,

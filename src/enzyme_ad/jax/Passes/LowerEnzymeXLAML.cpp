@@ -62,7 +62,8 @@ struct LowerTGammaOpToStablehlo : public OpRewritePattern<enzymexla::TGammaOp> {
         rewriter, loc, cast<ElementsAttr>(makeAttr(ty, 0)));
     auto nan = stablehlo::ConstantOp::create(
         rewriter, loc,
-        cast<ElementsAttr>(makeAttr(ty, std::numeric_limits<double>::quiet_NaN())));
+        cast<ElementsAttr>(
+            makeAttr(ty, std::numeric_limits<double>::quiet_NaN())));
 
     auto negPred = stablehlo::CompareOp::create(
         rewriter, loc, operand, zero, stablehlo::ComparisonDirection::LT,
@@ -71,8 +72,8 @@ struct LowerTGammaOpToStablehlo : public OpRewritePattern<enzymexla::TGammaOp> {
     auto LGamma = stablehlo::materializeLgamma(rewriter, loc, operand);
     auto expLGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
 
-    auto result = stablehlo::SelectOp::create(rewriter, loc, negPred, nan,
-                                              expLGamma);
+    auto result =
+        stablehlo::SelectOp::create(rewriter, loc, negPred, nan, expLGamma);
 
     rewriter.replaceOp(op, result);
     return success();

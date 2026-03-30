@@ -2857,8 +2857,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::ExtUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
           arith::FPToUIOp, arith::TruncFOp, arith::ExtFOp, math::SqrtOp,
           math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp,
-          math::AbsIOp, math::IsNaNOp, math::AtanOp, arith::BitcastOp, enzymexla::TGammaOp,
-          math::ErfOp>(op)) {
+          math::AbsIOp, math::IsNaNOp, math::AtanOp, arith::BitcastOp,
+          enzymexla::TGammaOp, math::ErfOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);

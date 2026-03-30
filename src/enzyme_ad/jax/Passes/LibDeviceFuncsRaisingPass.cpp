@@ -13,8 +13,8 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
@@ -1049,8 +1049,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   populateOpPatterns<math::TruncOp>(converter, patterns, "__nv_trunc",
                                     "__nv_truncf");
   populateOpPatterns<enzymexla::TGammaOp>(converter, patterns, "__nv_tgamma",
-    "__nv_tgammaf"
-  );
+                                          "__nv_tgammaf");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
