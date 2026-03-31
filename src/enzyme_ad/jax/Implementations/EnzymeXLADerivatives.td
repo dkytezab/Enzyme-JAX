@@ -51,6 +51,7 @@ def Pad : Inst<"PadOp", "stablehlo">;
 def Rotate : Inst<"RotateOp", "enzymexla">;
 def Extend : Inst<"ExtendOp", "enzymexla">;
 def CHLO_Polygamma: Inst<"PolygammaOp", "chlo">;
+def CHLO_Digamma: Inst<"DigammaOp", "chlo">;
 
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
@@ -94,7 +95,7 @@ def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
 
 def : EnzymeXLADerivative<"LGammaOp", (Op $input),
                     [
-                      (CheckedMul (DiffeRet), (CHLO_Polygamma (HLOConstantFP<"0"> $input), $input))
+                      (CheckedMul (DiffeRet), (CHLO_Digamma $input))
                     ]
                   >;
 

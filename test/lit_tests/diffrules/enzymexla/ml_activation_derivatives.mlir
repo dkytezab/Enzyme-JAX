@@ -200,6 +200,6 @@ module {
 // LGAMMA-REV-LABEL: func.func @lgamma_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
 // LGAMMA-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
 // LGAMMA-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
-// LGAMMA-REV: %[[PG:.*]] = chlo.polygamma %[[ZERO]], %arg0
-// LGAMMA-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[PG]] : tensor<6xf32>
+// LGAMMA-REV: %[[DG:.*]] = chlo.digamma %arg0 : tensor<6xf32> -> tensor<6xf32>
+// LGAMMA-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[DG]] : tensor<6xf32>
 // LGAMMA-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
