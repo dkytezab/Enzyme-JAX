@@ -93,6 +93,10 @@ def ApplyNoopReversePatterns : EnzymeHLOPatternOp<
     "noop_reverse"> {
   let patterns = ["NoopReverse"];
 }
+def ApplySliceReversePatterns : EnzymeHLOPatternOp<
+    "slice_reverse"> {
+  let patterns = ["SliceReverse"];
+}
 def ApplySliceSlicePatterns : EnzymeHLOPatternOp<
     "slice_slice"> {
   let patterns = ["SliceSlice"];
@@ -256,6 +260,10 @@ def ApplyGeluConstProp : EnzymeHLOPatternOp<
 def ApplyTGammaConstProp : EnzymeHLOPatternOp<
     "tgamma_const_prop">{
   let patterns = ["TGammaConstProp"];
+}
+def ApplyLGammaConstProp : EnzymeHLOPatternOp<
+    "lgamma_const_prop">{
+  let patterns = ["LGammaConstProp", "CHLOLGammaConstProp"];
 }
 def ApplySoftplusConstProp : EnzymeHLOPatternOp<
     "softplus_const_prop">{
@@ -439,6 +447,14 @@ def ApplyConvertConvertIntPatterns : EnzymeHLOPatternOp<
     "convert_convert_int"> {
   let patterns = ["ConvertConvertInt"];
 }
+def ApplyConvertMulConvertPatterns : EnzymeHLOPatternOp<
+    "convert_mul_convert"> {
+  let patterns = ["ConvertMulConvert"];
+}
+def ApplyNegateReduceWindowSubPatterns : EnzymeHLOPatternOp<
+    "negate_reduce_window_sub"> {
+  let patterns = ["NegateReduceWindowSub"];
+}
 def ApplyConcatToPadPatterns : EnzymeHLOPatternOp<
     "concat_to_pad"> {
   let patterns = ["ConcatToPad"];
@@ -535,6 +551,11 @@ def ApplyAllFiniteIsNegInfPatterns : EnzymeHLOPatternOp<
 def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
     "concat_reshape_slice"> {
   let patterns = ["ConcatReshapeSlice"];
+}
+
+def ApplyConcatBroadcastSlicePatterns : EnzymeHLOPatternOp<
+    "concat_broadcast_slice"> {
+  let patterns = ["ConcatBroadcastSlice"];
 }
 
 def ApplyConcatReshapeReducePatterns : EnzymeHLOPatternOp<
@@ -1439,6 +1460,11 @@ def SelectPadToDUS : EnzymeHLOPatternOp<
   let patterns = ["SelectPadToDUS"];
 }
 
+def SelectSelectSameCond : EnzymeHLOPatternOp<
+    "select_select_same_cond"> {
+  let patterns = ["SelectSelectSameCond"];
+}
+
 def AndPadPad : EnzymeHLOPatternOp<
     "and_pad_pad"> {
   let patterns = ["AndPadPad"];
@@ -1625,6 +1651,12 @@ def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_negate_const_simplify"
 > {
   let patterns = ["CompareNegateConstSimplify"];
+}
+
+def CompareSubtractConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_subtract_const_simplify"
+> {
+  let patterns = ["CompareSubtractConstSimplify"];
 }
 
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
@@ -3092,12 +3124,6 @@ def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
 def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
     "split_complex_gather"> {
   let patterns = ["SplitComplexGather"];
-}
-
-// TODO: remove this once we have removed it from reactant
-def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
-    "split_complex_scatter_setindex"> {
-  let patterns = ["SplitComplexScatter"];
 }
 
 def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
