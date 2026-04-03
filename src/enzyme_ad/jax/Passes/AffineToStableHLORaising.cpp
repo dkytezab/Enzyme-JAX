@@ -2854,16 +2854,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // unary ops
   if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
-        arith::ExtUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
-        arith::FPToUIOp, arith::TruncFOp, arith::ExtFOp, math::SqrtOp,
-        math::RsqrtOp, math::CbrtOp, math::LogOp, math::Log1pOp,
-        math::Log2Op, math::Log10Op, math::ExpOp, math::Exp2Op,
-        math::ExpM1Op, math::AbsFOp, math::AbsIOp, math::IsNaNOp,
-        math::IsFiniteOp, math::AtanOp, math::TanhOp, math::TanOp,
-        math::AcosOp, math::AsinOp, math::FloorOp, math::CeilOp,
-        math::RoundOp, math::RoundEvenOp, math::TruncOp,
-        arith::BitcastOp,
-        enzymexla::TGammaOp, enzymexla::LGammaOp, math::ErfOp>(op)) {
+          arith::ExtUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
+          arith::FPToUIOp, arith::TruncFOp, arith::ExtFOp, math::SqrtOp,
+          math::RsqrtOp, math::CbrtOp, math::LogOp, math::Log1pOp, math::Log2Op,
+          math::Log10Op, math::ExpOp, math::Exp2Op, math::ExpM1Op, math::AbsFOp,
+          math::AbsIOp, math::IsNaNOp, math::IsFiniteOp, math::AtanOp,
+          math::TanhOp, math::TanOp, math::AcosOp, math::AsinOp, math::FloorOp,
+          math::CeilOp, math::RoundOp, math::RoundEvenOp, math::TruncOp,
+          arith::BitcastOp, enzymexla::TGammaOp, enzymexla::LGammaOp,
+          math::ErfOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);
